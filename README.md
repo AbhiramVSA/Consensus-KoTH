@@ -1,4 +1,4 @@
-```markdown
+=
 # KoTH CTF Infrastructure - 24 Mutating Targets
 
 This repository contains the infrastructure for an 8-hour, mutating King of the Hill (KoTH) event. Targets are broken down into 8 hourly rounds (H1 through H8), with 3 targets per round (A, B, C).
