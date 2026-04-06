@@ -1,0 +1,215 @@
+version: '3.8'
+
+services:
+  # ============================================================
+  # HOUR 1
+  # ============================================================
+  machineH1A:
+    build: ./machineH1A
+    container_name: machineH1A
+    ports:
+      - "10001:80"
+    restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN
+
+  machineH1B:
+    build: ./machineH1B
+    container_name: machineH1B
+    ports:
+      - "10002:6379"
+      - "10003:22"
+    restart: unless-stopped
+
+  machineH1C:
+    build: ./machineH1C
+    container_name: machineH1C
+    ports:
+      - "10004:21"
+      - "10005:80"
+      - "10006:30000-31000"
+    restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN
+
+  # ============================================================
+  # HOUR 2
+  # ============================================================
+  machineH2A:
+    build: ./machineH2A
+    container_name: machineH2A
+    ports:
+      - "10010:8080"
+    restart: unless-stopped
+
+  machineH2B:
+    build: ./machineH2B
+    container_name: machineH2B
+    ports:
+      - "10011:80"
+    restart: unless-stopped
+
+  machineH2C:
+    build: ./machineH2C
+    container_name: machineH2C
+    ports:
+      - "10012:8080"
+    restart: unless-stopped
+
+  # ============================================================
+  # HOUR 3
+  # ============================================================
+  machineH3A:
+    build: ./machineH3A
+    container_name: machineH3A
+    ports:
+      - "10020:445"
+      - "10021:22"
+    restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN
+
+  machineH3B:
+    build: ./machineH3B
+    container_name: machineH3B
+    ports:
+      - "10022:80"
+    restart: unless-stopped
+
+  machineH3C:
+    build: ./machineH3C
+    container_name: machineH3C
+    ports:
+      - "10023:80"
+    restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN
+
+  # ============================================================
+  # HOUR 4
+  # ============================================================
+  machineH4A:
+    build: ./machineH4A
+    container_name: machineH4A
+    ports:
+      - "10030:3000"
+    restart: unless-stopped
+
+  machineH4B:
+    build: ./machineH4B
+    container_name: machineH4B
+    ports:
+      - "10031:8080"
+    restart: unless-stopped
+
+  machineH4C:
+    build: ./machineH4C
+    container_name: machineH4C
+    ports:
+      - "10032:80"
+    restart: unless-stopped
+
+  # ============================================================
+  # HOUR 5
+  # ============================================================
+  machineH5A:
+    build: ./machineH5A
+    container_name: machineH5A
+    ports:
+      - "10040:10000"
+    restart: unless-stopped
+
+  machineH5B:
+    build: ./machineH5B
+    container_name: machineH5B
+    ports:
+      - "10041:9200"
+    restart: unless-stopped
+
+  machineH5C:
+    build: ./machineH5C
+    container_name: machineH5C
+    ports:
+      - "10042:8080"
+    restart: unless-stopped
+
+  # ============================================================
+  # HOUR 6
+  # ============================================================
+  machineH6A:
+    build: ./machineH6A
+    container_name: machineH6A
+    ports:
+      - "10050:3632"
+      - "10051:2049"
+    restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN
+      - NET_ADMIN
+
+  machineH6B:
+    build: ./machineH6B
+    container_name: machineH6B
+    ports:
+      - "10052:27017"
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker.sock for PrivEsc
+
+  machineH6C:
+    build: ./machineH6C
+    container_name: machineH6C
+    ports:
+      - "10053:443"
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+
+  # ============================================================
+  # HOUR 7
+  # ============================================================
+  machineH7A:
+    build: ./machineH7A
+    container_name: machineH7A
+    ports:
+      - "10060:161/udp"
+      - "10061:22"
+    restart: unless-stopped
+
+  machineH7B:
+    build: ./machineH7B
+    container_name: machineH7B
+    ports:
+      - "10062:3000"
+    restart: unless-stopped
+
+  machineH7C:
+    build: ./machineH7C
+    container_name: machineH7C
+    ports:
+      - "10063:873"
+    restart: unless-stopped
+
+  # ============================================================
+  # HOUR 8
+  # ============================================================
+  machineH8A:
+    build: ./machineH8A
+    container_name: machineH8A
+    ports:
+      - "10070:80"
+    restart: unless-stopped
+
+  machineH8B:
+    build: ./machineH8B
+    container_name: machineH8B
+    ports:
+      - "10071:5000"
+    restart: unless-stopped
+
+  machineH8C:
+    build: ./machineH8C
+    container_name: machineH8C
+    ports:
+      - "10072:8000"
+    restart: unless-stopped

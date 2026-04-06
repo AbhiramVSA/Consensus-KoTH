@@ -1,0 +1,10 @@
+{
+  "name": "koth-node-app",
+  "version": "1.0.0",
+  "description": "KoTH Node.js app",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-serialize": "0.0.4"
+  }
+}
