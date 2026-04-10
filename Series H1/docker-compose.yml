@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  machine_h1a:
+    build:
+      context: ./machineH1A
+      dockerfile: Dockerfile
+    image: koth-h1a:prod
+    container_name: koth_h1a
+    restart: unless-stopped
+    ports:
+      - "10001:80"    # Web (Reflex Gallery Exploit)
+    networks:
+      - h1_network
+
+  machine_h1b:
+    build:
+      context: ./machineH1B
+      dockerfile: Dockerfile
+    image: koth-h1b:prod
+    container_name: koth_h1b
+    restart: unless-stopped
+    ports:
+      - "10002:6379"  # Redis (Unauthenticated)
+      - "10003:22"    # SSH (Key Injection Entry)
+    networks:
+      - h1_network
+
+  machine_h1c:
+    build:
+      context: ./machineH1C
+      dockerfile: Dockerfile
+    image: koth-h1c:prod
+    container_name: koth_h1c
+    restart: unless-stopped
+    ports:
+      - "10004:80"    # Web (Command Injection / Ping Tool)
+    networks:
+      - h1_network
+
+networks:
+  h1_network:
+    driver: bridge

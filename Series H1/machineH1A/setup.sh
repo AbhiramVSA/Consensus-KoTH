@@ -64,6 +64,9 @@ php wp-cli.phar plugin activate reflex-gallery --allow-root
 echo "[*] Setting Privilege Escalation Vector..."
 chmod u+s /usr/bin/find
 
+echo "[*] Finalizing permissions for web root..."
+chown -R www-data:www-data /var/www/html/
+
 echo "[*] Cleaning up database locks for Docker image snapshot..."
 service mysql stop
 sleep 2
