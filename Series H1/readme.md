@@ -8,7 +8,9 @@ This module manages the deployment and teardown of the Round 1 machines:
 
 ## For development use only 
 ```bash
+./orchestrator_h1.sh build
 ./orchestrator_h1.sh start
+./orchestrator_h1.sh stop
 ```
 
 
