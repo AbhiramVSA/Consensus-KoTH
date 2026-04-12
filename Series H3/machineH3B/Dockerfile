@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # King file
-RUN mkdir -p /root && echo "unclaimed" > /root/king.txt && chmod 666 /root/king.txt && chmod 777 /root
+RUN mkdir -p /root && echo "unclaimed" > /root/king.txt && chmod 666 /root/king.txt && chmod 755 /root
 
 # Install Drupal 7.57 (vulnerable to Drupalgeddon2 CVE-2018-7600)
 RUN wget -q https://ftp.drupal.org/files/projects/drupal-7.57.tar.gz -P /tmp/ && \
