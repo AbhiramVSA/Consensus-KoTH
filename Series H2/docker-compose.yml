@@ -1,26 +1,37 @@
-version: '3.8'
-
 services:
-  h2a:
+  machineH2A:
     build: 
       context: ./machineH2A
-    container_name: koth_h2a
+    image: machineh2a
+    container_name: machineH2A
     ports:
       - "10010:8080" # Jenkins web interface
     restart: unless-stopped
+    networks:
+      - h2_network
 
-  h2b:
+  machineH2B:
     build: 
       context: ./machineH2B
-    container_name: koth_h2b
+    image: machineh2b
+    container_name: machineH2B
     ports:
       - "10011:80" # PHP Admin Portal
     restart: unless-stopped
+    networks:
+      - h2_network
 
-  h2c:
+  machineH2C:
     build: 
       context: ./machineH2C
-    container_name: koth_h2c
+    image: machineh2c
+    container_name: machineH2C
     ports:
       - "10012:8080" # Tomcat Manager
     restart: unless-stopped
+    networks:
+      - h2_network
+
+networks:
+  h2_network:
+    driver: bridge

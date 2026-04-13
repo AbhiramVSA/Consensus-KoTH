@@ -1,0 +1,37 @@
+services:
+  machineH5A:
+    build:
+      context: ./machineH5A
+      dockerfile: Dockerfile
+    image: machineh5a
+    restart: unless-stopped
+    ports:
+      - "10040:10000"   # Webmin RCE CVE-2019-15107
+    networks:
+      - h5_network
+
+  machineH5B:
+    build:
+      context: ./machineH5B
+      dockerfile: Dockerfile
+    image: machineh5b
+    restart: unless-stopped
+    ports:
+      - "10041:9200"    # ElasticSearch Dynamic Scripting RCE
+    networks:
+      - h5_network
+
+  machineH5C:
+    build:
+      context: ./machineH5C
+      dockerfile: Dockerfile
+    image: machineh5c
+    restart: unless-stopped
+    ports:
+      - "10042:8080"    # Apache Struts CVE-2017-5638
+    networks:
+      - h5_network
+
+networks:
+  h5_network:
+    driver: bridge

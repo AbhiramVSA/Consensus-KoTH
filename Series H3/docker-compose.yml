@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ================================================================
 # KoTH Series H3 Orchestrator
 # ================================================================
@@ -28,8 +26,8 @@ services:
       - "10020:445"   # Samba SMB
       - "10021:22"    # SSH
     restart: unless-stopped
-    cap_add:
-      - SYS_ADMIN     # Required for lxd group PrivEsc simulation
+    networks:
+      - h3_network
 
   machineH3B:
     build:
@@ -39,6 +37,8 @@ services:
     ports:
       - "10022:80"    # Apache / Drupal 7.57 (Drupalgeddon2)
     restart: unless-stopped
+    networks:
+      - h3_network
 
   machineH3C:
     build:
@@ -48,5 +48,9 @@ services:
     ports:
       - "10023:80"    # Apache / PHP app with exposed .git
     restart: unless-stopped
-    cap_add:
-      - SYS_ADMIN     # Required for setcap on perl
+    networks:
+      - h3_network
+
+networks:
+  h3_network:
+    driver: bridge

@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ================================================================
 # KoTH Series H4 Orchestrator
 # ================================================================
@@ -27,6 +25,8 @@ services:
     ports:
       - "10030:3000"  # Node.js vulnerable app
     restart: unless-stopped
+    networks:
+      - h4_network
 
   machineH4B:
     build:
@@ -36,6 +36,8 @@ services:
     ports:
       - "10031:8080"  # Spring4Shell (CVE-2022-22965)
     restart: unless-stopped
+    networks:
+      - h4_network
 
   machineH4C:
     build:
@@ -45,3 +47,9 @@ services:
     ports:
       - "10032:80"    # SSRF → internal root API
     restart: unless-stopped
+    networks:
+      - h4_network
+
+networks:
+  h4_network:
+    driver: bridge

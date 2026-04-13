@@ -1,0 +1,38 @@
+services:
+  machineH7A:
+    build:
+      context: ./machineH7A
+      dockerfile: Dockerfile
+    image: machineh7a
+    restart: unless-stopped
+    ports:
+      - "10060:161/udp" # SNMP Public community
+      - "10061:22"      # SSH
+    networks:
+      - h7_network
+
+  machineH7B:
+    build:
+      context: ./machineH7B
+      dockerfile: Dockerfile
+    image: machineh7b
+    restart: unless-stopped
+    ports:
+      - "10062:3000"    # Grafana Path Traversal CVE-2021-43798
+    networks:
+      - h7_network
+
+  machineH7C:
+    build:
+      context: ./machineH7C
+      dockerfile: Dockerfile
+    image: machineh7c
+    restart: unless-stopped
+    ports:
+      - "10063:873"     # RSync anonymous write
+    networks:
+      - h7_network
+
+networks:
+  h7_network:
+    driver: bridge

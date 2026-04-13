@@ -1,0 +1,47 @@
+services:
+  machineH6A:
+    build:
+      context: ./machineH6A
+      dockerfile: Dockerfile
+    image: machineh6a
+    restart: unless-stopped
+    ports:
+      - "10050:3632"    # distcc CVE-2004-2687
+      - "10051:2049"    # NFS no_root_squash
+    cap_add:
+      - SYS_ADMIN
+      - NET_ADMIN
+    networks:
+      - h6_network
+
+  machineH6B:
+    build:
+      context: ./machineH6B
+      dockerfile: Dockerfile
+    image: machineh6b
+    restart: unless-stopped
+    ports:
+      - "10052:27017"   # MongoDB No Auth
+      - "10054:22"      # SSH foothold after cracking reused creds
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - h6_network
+
+  machineH6C:
+    build:
+      context: ./machineH6C
+      dockerfile: Dockerfile
+    image: machineh6c
+    restart: unless-stopped
+    ports:
+      - "10053:443"     # Heartbleed CVE-2014-0160
+      - "10055:22"      # SSH foothold using leaked creds
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - h6_network
+
+networks:
+  h6_network:
+    driver: bridge

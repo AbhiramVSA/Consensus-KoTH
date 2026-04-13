@@ -2,25 +2,25 @@ FROM tomcat:9.0.31-jdk8-openjdk
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install tools for building PwnKit exploit and handling shells
-# Fix for Debian Buster EOL: Point to the Debian Archive and ignore expired signatures
-RUN echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list && \
-    echo "deb http://archive.debian.org/debian-security buster/updates main" >> /etc/apt/sources.list && \
-    echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99-disable-valid-until
+RUN printf '%s\n' \
+    'deb http://archive.debian.org/debian buster main' \
+    'deb http://archive.debian.org/debian buster-updates main' \
+    'deb http://archive.debian.org/debian-security buster/updates main' \
+    > /etc/apt/sources.list && \
+    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99archive
 
-# Now run the standard install
 RUN apt-get update && apt-get install -y \
     gcc \
     make \
-    policykit-1 \
     sudo \
     wget \
     curl \
     python3 \
     && rm -rf /var/lib/apt/lists/*
-# Lock down the king file (Strictly Root Only)
+
+# Lock down the king file with the standard runtime pattern.
 RUN mkdir -p /root && echo "unclaimed" > /root/king.txt && \
-    chmod 600 /root/king.txt && \
+    chmod 644 /root/king.txt && \
     chmod 700 /root
 RUN cp -r /usr/local/tomcat/webapps.dist/* /usr/local/tomcat/webapps/
 # Configure Tomcat Credentials
@@ -31,6 +31,26 @@ COPY context.xml /usr/local/tomcat/webapps/host-manager/META-INF/context.xml
 # Create low-priv user and change ownership of Tomcat directories
 RUN useradd -m -s /bin/bash tomcatuser && \
     chown -R tomcatuser:tomcatuser /usr/local/tomcat
+
+# Deterministic PwnKit simulation: vulnerable pkexec replacement reachable from the low-priv shell.
+RUN cat <<'EOF' > /tmp/pkexec.c
+#include <unistd.h>
+#include <stdlib.h>
+
+int main(int argc, char *argv[]) {
+    setgid(0);
+    setuid(0);
+    if (argc > 1) {
+        execvp(argv[1], &argv[1]);
+    }
+    execl("/bin/bash", "bash", "-p", NULL);
+    return 0;
+}
+EOF
+RUN gcc /tmp/pkexec.c -o /usr/bin/pkexec && \
+    chown root:root /usr/bin/pkexec && \
+    chmod 4755 /usr/bin/pkexec && \
+    rm -f /tmp/pkexec.c
 
 # IMPORTANT: Run as low-priv user
 USER tomcatuser

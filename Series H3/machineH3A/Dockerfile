@@ -5,15 +5,30 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     samba \
     openssh-server \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 # King file
-RUN mkdir -p /root && echo "unclaimed" > /root/king.txt && chmod 666 /root/king.txt && chmod 755 /root
+RUN mkdir -p /root && echo "unclaimed" > /root/king.txt && chmod 644 /root/king.txt && chmod 700 /root
 
 # Create a low-priv user in lxd group (PrivEsc vector)
 RUN useradd -m -s /bin/bash ctfuser && echo 'ctfuser:password' | chpasswd
 RUN groupadd lxd 2>/dev/null || true
 RUN usermod -aG lxd ctfuser
+RUN cat <<'EOF' > /tmp/lxc-shell.c
+#include <unistd.h>
+
+int main(void) {
+    setgid(0);
+    setuid(0);
+    execl("/bin/bash", "bash", "-p", NULL);
+    return 0;
+}
+EOF
+RUN gcc /tmp/lxc-shell.c -o /usr/local/bin/lxc && \
+    chown root:lxd /usr/local/bin/lxc && \
+    chmod 4750 /usr/local/bin/lxc && \
+    rm -f /tmp/lxc-shell.c
 
 # Create SMB anonymous share with leaked SSH private key
 RUN mkdir -p /srv/smb/share

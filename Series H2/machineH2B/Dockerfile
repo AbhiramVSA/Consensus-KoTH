@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /root && echo "unclaimed" > /root/king.txt && \
-    chmod 600 /root/king.txt && \
+    chmod 644 /root/king.txt && \
     chmod 700 /root
 
 COPY app/ /var/www/html/
@@ -30,6 +30,6 @@ EXPOSE 80
 CMD ["/bin/bash", "-c", \
     "service mysql start && \
     while ! mysqladmin ping --silent; do sleep 1; done && \
-    mysql < /docker-entrypoint-initdb.d/setup.sql && \
+    if ! mysql -Nse \"SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='kothdb'\" | grep -q '^kothdb$'; then mysql < /docker-entrypoint-initdb.d/setup.sql; fi && \
     service apache2 start && \
     tail -f /var/log/apache2/error.log"]

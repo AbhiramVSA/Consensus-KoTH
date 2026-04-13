@@ -1,11 +1,9 @@
-version: '3.8'
-
 services:
   # ============================================================
   # HOUR 1
   # ============================================================
   machineH1A:
-    build: ./machineH1A
+    build: ./Series H1/machineH1A
     container_name: machineH1A
     image: machineh1a
     ports:
@@ -15,7 +13,7 @@ services:
       - SYS_ADMIN
 
   machineH1B:
-    build: ./machineH1B
+    build: ./Series H1/machineH1B
     container_name: machineH1B
     image: machineh1b
     ports:
@@ -24,13 +22,11 @@ services:
     restart: unless-stopped
 
   machineH1C:
-    build: ./machineH1C
+    build: ./Series H1/machineH1C
     container_name: machineH1C
     image: machineh1c
     ports:
-      - "10004:21"
-      - "10005:80"
-      - "30000-31000:30000-31000"
+      - "10004:80"
     restart: unless-stopped
     cap_add:
       - SYS_ADMIN
@@ -39,7 +35,7 @@ services:
   # HOUR 2
   # ============================================================
   machineH2A:
-    build: ./machineH2A
+    build: ./Series H2/machineH2A
     container_name: machineH2A
     image: machineh2a
     ports:
@@ -47,7 +43,7 @@ services:
     restart: unless-stopped
 
   machineH2B:
-    build: ./machineH2B
+    build: ./Series H2/machineH2B
     container_name: machineH2B
     image: machineh2b
     ports:
@@ -55,7 +51,7 @@ services:
     restart: unless-stopped
 
   machineH2C:
-    build: ./machineH2C
+    build: ./Series H2/machineH2C
     container_name: machineH2C
     image: machineh2c
     ports:
@@ -98,7 +94,7 @@ services:
   # HOUR 4
   # ============================================================
   machineH4A:
-    build: ./machineH4A
+    build: ./Series H4/machineH4A
     container_name: machineH4A
     image: machineh4a
     ports:
@@ -106,7 +102,7 @@ services:
     restart: unless-stopped
 
   machineH4B:
-    build: ./machineH4B
+    build: ./Series H4/machineH4B
     container_name: machineH4B
     image: machineh4b
     ports:
@@ -114,7 +110,7 @@ services:
     restart: unless-stopped
 
   machineH4C:
-    build: ./machineH4C
+    build: ./Series H4/machineH4C
     container_name: machineH4C
     image: machineh4c
     ports:
@@ -125,7 +121,7 @@ services:
   # HOUR 5
   # ============================================================
   machineH5A:
-    build: ./machineH5A
+    build: ./Series H5/machineH5A
     container_name: machineH5A
     image: machineh5a
     ports:
@@ -133,7 +129,7 @@ services:
     restart: unless-stopped
 
   machineH5B:
-    build: ./machineH5B
+    build: ./Series H5/machineH5B
     container_name: machineH5B
     image: machineh5b
     ports:
@@ -141,7 +137,7 @@ services:
     restart: unless-stopped
 
   machineH5C:
-    build: ./machineH5C
+    build: ./Series H5/machineH5C
     container_name: machineH5C
     image: machineh5c
     ports:
@@ -152,7 +148,7 @@ services:
   # HOUR 6
   # ============================================================
   machineH6A:
-    build: ./machineH6A
+    build: ./Series H6/machineH6A
     container_name: machineH6A
     image: machineh6a
     ports:
@@ -164,21 +160,23 @@ services:
       - NET_ADMIN
 
   machineH6B:
-    build: ./machineH6B
+    build: ./Series H6/machineH6B
     container_name: machineH6B
     image: machineh6b
     ports:
       - "10052:27017"
+      - "10054:22"
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Docker.sock for PrivEsc
 
   machineH6C:
-    build: ./machineH6C
+    build: ./Series H6/machineH6C
     container_name: machineH6C
     image: machineh6c
     ports:
       - "10053:443"
+      - "10055:22"
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -187,7 +185,7 @@ services:
   # HOUR 7
   # ============================================================
   machineH7A:
-    build: ./machineH7A
+    build: ./Series H7/machineH7A
     container_name: machineH7A
     image: machineh7a
     ports:
@@ -196,7 +194,7 @@ services:
     restart: unless-stopped
 
   machineH7B:
-    build: ./machineH7B
+    build: ./Series H7/machineH7B
     container_name: machineH7B
     image: machineh7b
     ports:
@@ -204,7 +202,7 @@ services:
     restart: unless-stopped
 
   machineH7C:
-    build: ./machineH7C
+    build: ./Series H7/machineH7C
     container_name: machineH7C
     image: machineh7c
     ports:
@@ -215,7 +213,7 @@ services:
   # HOUR 8
   # ============================================================
   machineH8A:
-    build: ./machineH8A
+    build: ./Series H8/machineH8A
     container_name: machineH8A
     image: machineh8a
     ports:
@@ -223,7 +221,7 @@ services:
     restart: unless-stopped
 
   machineH8B:
-    build: ./machineH8B
+    build: ./Series H8/machineH8B
     container_name: machineH8B
     image: machineh8b
     ports:
@@ -231,7 +229,7 @@ services:
     restart: unless-stopped
 
   machineH8C:
-    build: ./machineH8C
+    build: ./Series H8/machineH8C
     container_name: machineH8C
     image: machineh8c
     ports:

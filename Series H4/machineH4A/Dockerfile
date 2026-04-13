@@ -12,8 +12,8 @@ RUN apt-get update && apt-get install -y \
 
 # Lock down the king file (Root Only)
 RUN mkdir -p /root && echo "unclaimed" > /root/king.txt && \
-    chmod 666 /root/king.txt && \
-    chmod 755 /root
+    chmod 644 /root/king.txt && \
+    chmod 700 /root
 
 # Actually SET the root password so the 'su' command works
 RUN echo 'root:r00tme' | chpasswd

@@ -16,7 +16,7 @@ RUN wget -q -O /tmp/jenkins.war https://updates.jenkins.io/download/war/2.235.1/
 
 # King file - LOCKED DOWN (Requires root/sudo to write)
 RUN mkdir -p /root && echo "unclaimed" > /root/king.txt && \
-    chmod 600 /root/king.txt && \
+    chmod 644 /root/king.txt && \
     chmod 700 /root
 
 # Create jenkins user
