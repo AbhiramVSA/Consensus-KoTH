@@ -46,10 +46,10 @@ class Settings:
     rotation_interval_seconds: int = int(os.getenv("ROTATION_INTERVAL_SECONDS", "3600"))
     points_per_cycle: float = float(os.getenv("POINTS_PER_CYCLE", "1.0"))
 
-    # /opt/koth/h{series}/docker-compose.yml on each challenge node
-    remote_series_root: str = os.getenv("REMOTE_SERIES_ROOT", "/opt/koth")
+    # <REMOTE_SERIES_ROOT>/h{series}/docker-compose.yml on each challenge node
+    remote_series_root: str = os.getenv("REMOTE_SERIES_ROOT", "/opt/KOTH_orchestrator")
     container_name_template: str = os.getenv(
-        "CONTAINER_NAME_TEMPLATE", "koth_h{series}{variant_lower}"
+        "CONTAINER_NAME_TEMPLATE", "machineH{series}{variant}"
     )
 
     backend_url: str = os.getenv("BACKEND_URL", "")

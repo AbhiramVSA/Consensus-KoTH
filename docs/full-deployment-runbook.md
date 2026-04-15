@@ -1,81 +1,49 @@
-# KOTH Orchestrator Full Deployment Runbook
+# KOTH_orchestrator Deployment Runbook (Linear)
 
-This document is a complete, end-to-end setup guide for a 3-node distributed KOTH competition with a centralized referee server where HAProxy load-balancing runs on the same host as the referee service.
+This guide is intentionally linear:
 
-It covers:
+1. Set up `node1`, `node2`, `node3` first.
+2. Set up `referee` host second.
+3. Load balancer (HAProxy) is on the same host as referee.
 
-1. Infrastructure prerequisites
-2. Network and host preparation
-3. Challenge node setup (`node1/node2/node3`)
-4. Referee + load balancer setup (`referee`)
-5. Security hardening
-6. Competition operations
-7. Validation checklist
-8. Troubleshooting
+No separate LB machine is used.
 
-## 1. Reference Architecture
+## 0) Fixed Topology and Naming
 
-Use this baseline topology (replace IPs/hostnames as needed):
+Use these hosts (example):
 
-1. `node1` (challenge host): `10.0.0.11`
-2. `node2` (challenge host): `10.0.0.12`
-3. `node3` (challenge host): `10.0.0.13`
-4. `referee` (FastAPI + scheduler + SQLite + HAProxy): `10.0.0.20`
+1. `node1`: `10.0.0.11`
+2. `node2`: `10.0.0.12`
+3. `node3`: `10.0.0.13`
+4. `referee` (Referee API + Scheduler + HAProxy): `10.0.0.20`
 
-Competition model:
+Use `KOTH_orchestrator` naming consistently for paths.
 
-1. 8 series (`H1..H8`)
-2. 3 variants per series (`A/B/C`)
-3. Referee polls every 30s
-4. Scoring = earliest `king.txt` mtime across healthy nodes, per variant
-5. Tie-break = `NODE_PRIORITY` order
+## 1) Choose Install Root Once
 
-## 2. Prerequisites (All Hosts)
+Pick one install root and use it everywhere on all four hosts:
 
-## 2.1 OS and access
+1. Recommended: `/opt/KOTH_orchestrator`
+2. No-`/opt` fallback: `$HOME/KOTH_orchestrator`
 
-1. Ubuntu 22.04+ recommended
-2. `sudo` access on all hosts
-3. SSH connectivity across private VLAN/subnet
-4. Internet access for package installs and git clone
+The same logical layout must exist on all three node machines.
 
-## 2.2 Time sync (required)
+In commands below, `INSTALL_ROOT` means your chosen root.
 
-Earliest-change scoring depends on accurate clocks.
+## 2) Setup Node 1, Node 2, Node 3 (Do This First)
 
-Install and enable chrony on all hosts (`node1..3`, `referee`):
+Run this full section on each of `node1`, `node2`, and `node3`.
+
+## 2.1 Base packages + time sync
 
 ```bash
 sudo apt update
-sudo apt install -y chrony
+sudo apt install -y git curl ca-certificates gnupg lsb-release jq chrony
 sudo systemctl enable --now chrony
 chronyc tracking
 ```
 
-Do not proceed until all hosts report synchronized time.
-
-## 2.3 DNS/hostnames (recommended)
-
-Add stable hostnames in `/etc/hosts` on all machines:
-
-```text
-10.0.0.11  node1
-10.0.0.12  node2
-10.0.0.13  node3
-10.0.0.20  referee
-10.0.0.20  lb
-```
-
-## 3. Challenge Node Setup (Repeat on `node1`, `node2`, `node3`)
-
-## 3.1 Install base dependencies
-
-```bash
-sudo apt update
-sudo apt install -y git curl ca-certificates gnupg lsb-release jq
-```
-
-## 3.2 Install Docker
+## 2.2 Docker + Compose
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
@@ -85,21 +53,24 @@ docker --version
 docker compose version
 ```
 
-If your environment needs the `docker-compose` binary name:
+Important:
+Referee runtime executes `docker-compose ...` on nodes, so ensure `docker-compose` command exists.
 
 ```bash
 sudo apt install -y docker-compose-plugin
-docker-compose --version || true
+docker-compose --version
 ```
 
-## 3.3 Prepare deployment directory
+If `docker-compose` is still missing, install compatibility package:
 
-Use one of these options:
+```bash
+sudo apt install -y docker-compose
+docker-compose --version
+```
 
-1. Option A (`/opt`, recommended for production): requires `sudo` once to create/chown.
-2. Option B (`$HOME`, no `/opt` permission needed): works without `sudo`, but you must update `REMOTE_SERIES_ROOT` to match.
+## 2.3 Clone repository
 
-Option A:
+For `/opt` layout:
 
 ```bash
 sudo mkdir -p /opt/KOTH_orchestrator
@@ -108,7 +79,7 @@ cd /opt/KOTH_orchestrator
 git clone https://github.com/Izhaan-Raza/KOTH_orchestrator.git repo
 ```
 
-Option B:
+For `$HOME` layout:
 
 ```bash
 mkdir -p "$HOME/KOTH_orchestrator"
@@ -116,23 +87,21 @@ cd "$HOME/KOTH_orchestrator"
 git clone https://github.com/Izhaan-Raza/KOTH_orchestrator.git repo
 ```
 
-## 3.4 Build referee-compatible series layout
+## 2.4 Build required per-series directories
 
-The referee expects:
-
-1. `<REMOTE_SERIES_ROOT>/h1/docker-compose.yml`
-2. `<REMOTE_SERIES_ROOT>/h2/docker-compose.yml`
-3. ...
-4. `<REMOTE_SERIES_ROOT>/h8/docker-compose.yml`
-
-Create it:
+Set variable:
 
 ```bash
-export REMOTE_SERIES_ROOT="/opt/KOTH_orchestrator"   # or "$HOME/KOTH_orchestrator"
-cd "$REMOTE_SERIES_ROOT"
+export INSTALL_ROOT="/opt/KOTH_orchestrator"  # or "$HOME/KOTH_orchestrator"
+```
+
+Create `h1..h8` layout expected by referee:
+
+```bash
+cd "$INSTALL_ROOT"
 for i in 1 2 3 4 5 6 7 8; do
   mkdir -p "h$i"
-  cp -r "$REMOTE_SERIES_ROOT/repo/Series H$i/"* "$REMOTE_SERIES_ROOT/h$i/"
+  cp -r "$INSTALL_ROOT/repo/Series H$i/"* "$INSTALL_ROOT/h$i/"
 done
 ```
 
@@ -140,74 +109,63 @@ Validate:
 
 ```bash
 for i in 1 2 3 4 5 6 7 8; do
-  test -f "$REMOTE_SERIES_ROOT/h$i/docker-compose.yml" && echo "h$i OK" || echo "h$i MISSING"
+  test -f "$INSTALL_ROOT/h$i/docker-compose.yml" && echo "h$i OK" || echo "h$i MISSING"
 done
 ```
 
-## 3.5 Confirm per-series compose files define containers expected by referee
+## 2.5 Validate node locally (required)
 
-Container naming must match template:
-
-1. `machineH{series}{variant}`
-2. Example: `machineH1A`, `machineH1B`, `machineH1C`
-
-Quick checks:
+Run:
 
 ```bash
-cd "$REMOTE_SERIES_ROOT/h1"
-grep -n "container_name:" docker-compose.yml
+cd "$INSTALL_ROOT/repo"
+bash qa/deployment/validate_koth_node.sh --series-root "$INSTALL_ROOT"
 ```
 
-Expected values include `machineH1A`, `machineH1B`, `machineH1C`.
+Expected result: `ALL CHECKS PASSED`.
 
-## 3.6 Open firewall ports (if UFW enabled)
+Repeat sections `2.1` to `2.5` on `node1`, `node2`, `node3`.
 
-Each node exposes challenge services. At minimum allow:
+## 3) Setup Referee + LB on Same Host
 
-1. Referee SSH access: TCP 22
-2. Challenge service ports used by active series
+Run this section on `referee` host only.
 
-Example:
-
-```bash
-sudo ufw allow 22/tcp
-sudo ufw allow 10001:10072/tcp
-sudo ufw allow 10060/udp
-sudo ufw --force enable
-sudo ufw status
-```
-
-Adjust to your security policy and active rounds.
-
-## 4. Referee + Load Balancer Setup (`referee`)
-
-## 4.1 Install dependencies
+## 3.1 Base packages
 
 ```bash
 sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip curl jq
+sudo apt install -y git python3 python3-venv python3-pip curl jq chrony haproxy
+sudo systemctl enable --now chrony
+chronyc tracking
 ```
 
-## 4.2 Clone repository
+## 3.2 Clone repository
+
+For `/opt` layout:
 
 ```bash
 sudo mkdir -p /opt/KOTH_orchestrator
 sudo chown -R "$USER:$USER" /opt/KOTH_orchestrator
 cd /opt/KOTH_orchestrator
 git clone https://github.com/Izhaan-Raza/KOTH_orchestrator.git repo
-cd /opt/KOTH_orchestrator/repo/referee-server
 ```
 
-If `/opt` is unavailable, use:
+For `$HOME` layout:
 
 ```bash
 mkdir -p "$HOME/KOTH_orchestrator"
 cd "$HOME/KOTH_orchestrator"
 git clone https://github.com/Izhaan-Raza/KOTH_orchestrator.git repo
-cd "$HOME/KOTH_orchestrator/repo/referee-server"
 ```
 
-## 4.3 Python virtual environment
+Set:
+
+```bash
+export INSTALL_ROOT="/opt/KOTH_orchestrator"  # or "$HOME/KOTH_orchestrator"
+cd "$INSTALL_ROOT/repo/referee-server"
+```
+
+## 3.3 Python environment
 
 ```bash
 python3 -m venv .venv
@@ -216,7 +174,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## 4.4 Create SSH key for referee -> nodes
+## 3.4 SSH key from referee to all nodes
 
 ```bash
 mkdir -p ~/.ssh
@@ -224,7 +182,7 @@ chmod 700 ~/.ssh
 ssh-keygen -t ed25519 -f ~/.ssh/koth_referee -N ""
 ```
 
-Install public key on each challenge node:
+Install key on nodes:
 
 ```bash
 ssh-copy-id -i ~/.ssh/koth_referee.pub root@10.0.0.11
@@ -232,14 +190,14 @@ ssh-copy-id -i ~/.ssh/koth_referee.pub root@10.0.0.12
 ssh-copy-id -i ~/.ssh/koth_referee.pub root@10.0.0.13
 ```
 
-Add host keys for strict checking:
+Record host keys:
 
 ```bash
 ssh-keyscan -H 10.0.0.11 10.0.0.12 10.0.0.13 >> ~/.ssh/known_hosts
 chmod 600 ~/.ssh/known_hosts
 ```
 
-Connectivity tests:
+Quick SSH test:
 
 ```bash
 ssh -i ~/.ssh/koth_referee root@10.0.0.11 "hostname"
@@ -247,9 +205,9 @@ ssh -i ~/.ssh/koth_referee root@10.0.0.12 "hostname"
 ssh -i ~/.ssh/koth_referee root@10.0.0.13 "hostname"
 ```
 
-## 4.5 Configure environment
+## 3.5 Referee `.env` (critical)
 
-Create `referee-server/.env`:
+Create `"$INSTALL_ROOT/repo/referee-server/.env"`:
 
 ```env
 APP_HOST=0.0.0.0
@@ -280,11 +238,10 @@ WEBHOOK_URL=
 ADMIN_API_KEY=replace-with-long-random-value
 ```
 
-If you used the no-`/opt` layout, set:
+If using `$HOME` layout, set:
 
 1. `REMOTE_SERIES_ROOT=/home/<node-user>/KOTH_orchestrator`
-2. Keep it identical across all three challenge nodes
-3. Use the same value in referee `.env`
+2. This path must exist identically on all node machines.
 
 Generate a strong API key:
 
@@ -295,87 +252,15 @@ print(secrets.token_urlsafe(48))
 PY
 ```
 
-Replace `ADMIN_API_KEY` with generated value.
+## 3.6 HAProxy config on referee host
 
-## 4.6 Preflight validation from referee
+Edit `/etc/haproxy/haproxy.cfg` with frontends/backends for your exposed game ports.
 
-```bash
-cd /opt/KOTH_orchestrator/repo/referee-server
-source .venv/bin/activate
-python setup_cli.py --series 1
-```
-
-Expected:
-
-1. Docker available on each node
-2. `<REMOTE_SERIES_ROOT>/h1/docker-compose.yml` exists on each node
-
-## 4.7 Run referee manually (first boot)
-
-```bash
-cd /opt/KOTH_orchestrator/repo/referee-server
-source .venv/bin/activate
-uvicorn app:app --host 0.0.0.0 --port 8000
-```
-
-Check:
-
-1. Dashboard: `http://10.0.0.20:8000`
-2. API status: `curl http://10.0.0.20:8000/api/status`
-
-## 4.8 Run referee as systemd service
-
-Create `/etc/systemd/system/koth-referee.service`:
-
-```ini
-[Unit]
-Description=KOTH Referee Server
-After=network.target
-
-[Service]
-Type=simple
-User=<YOUR_USER>
-WorkingDirectory=/opt/KOTH_orchestrator/repo/referee-server
-EnvironmentFile=/opt/KOTH_orchestrator/repo/referee-server/.env
-ExecStart=/opt/KOTH_orchestrator/repo/referee-server/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable/start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now koth-referee
-sudo systemctl status koth-referee --no-pager
-```
-
-Logs:
-
-```bash
-journalctl -u koth-referee -f
-```
-
-## 5. Load Balancer Setup on Referee Host (HAProxy)
-
-## 5.1 Install HAProxy
-
-```bash
-sudo apt update
-sudo apt install -y haproxy
-```
-
-## 5.2 Configure HAProxy
-
-Edit `/etc/haproxy/haproxy.cfg`. Example for H1 ports:
+Minimal H1 example:
 
 ```cfg
 global
   daemon
-  maxconn 50000
 
 defaults
   mode tcp
@@ -388,7 +273,6 @@ frontend h1a
   default_backend h1a_nodes
 backend h1a_nodes
   balance roundrobin
-  option tcp-check
   server n1 10.0.0.11:10001 check
   server n2 10.0.0.12:10001 check
   server n3 10.0.0.13:10001 check
@@ -398,7 +282,6 @@ frontend h1b
   default_backend h1b_nodes
 backend h1b_nodes
   balance roundrobin
-  option tcp-check
   server n1 10.0.0.11:10002 check
   server n2 10.0.0.12:10002 check
   server n3 10.0.0.13:10002 check
@@ -408,203 +291,117 @@ frontend h1c
   default_backend h1c_nodes
 backend h1c_nodes
   balance roundrobin
-  option tcp-check
   server n1 10.0.0.11:10004 check
   server n2 10.0.0.12:10004 check
   server n3 10.0.0.13:10004 check
 ```
 
-Repeat frontends/backends for other published round ports you expose.
-
-Validate and reload:
+Validate and start:
 
 ```bash
 sudo haproxy -c -f /etc/haproxy/haproxy.cfg
 sudo systemctl enable --now haproxy
 sudo systemctl restart haproxy
-sudo systemctl status haproxy --no-pager
 ```
 
-## 6. Starting Competition
+## 3.7 Start referee
 
-All commands below run from any admin host with network access to referee.
+Preflight:
 
-Set helpers:
+```bash
+cd "$INSTALL_ROOT/repo/referee-server"
+source .venv/bin/activate
+python setup_cli.py --series 1
+```
+
+Manual run:
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+Or systemd service:
+
+```ini
+[Unit]
+Description=KOTH Referee Server
+After=network.target
+
+[Service]
+Type=simple
+User=<YOUR_USER>
+WorkingDirectory=<INSTALL_ROOT>/repo/referee-server
+EnvironmentFile=<INSTALL_ROOT>/repo/referee-server/.env
+ExecStart=<INSTALL_ROOT>/repo/referee-server/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Replace `<INSTALL_ROOT>` with your actual value before saving the unit file.
+Example:
+
+1. `/opt/KOTH_orchestrator`
+2. `/home/<user>/KOTH_orchestrator`
+
+## 3.8 Validate referee+LB host (required)
+
+```bash
+cd "$INSTALL_ROOT/repo"
+bash qa/deployment/validate_referee_lb.sh \
+  --series-root "$INSTALL_ROOT" \
+  --referee-dir "$INSTALL_ROOT/repo/referee-server" \
+  --api-url "http://127.0.0.1:8000"
+```
+
+Expected result: `ALL CHECKS PASSED`.
+
+## 4) Operational API Commands
 
 ```bash
 export REFEREE_URL="http://10.0.0.20:8000"
-export API_KEY="<your-admin-api-key>"
+export API_KEY="<admin_api_key>"
 ```
 
-## 6.1 Start
+Start:
 
 ```bash
 curl -sS -X POST "$REFEREE_URL/api/competition/start" -H "X-API-Key: $API_KEY"
 ```
 
-## 6.2 Check status
+Status:
 
 ```bash
 curl -sS "$REFEREE_URL/api/status" | jq .
 ```
 
-## 6.3 Manual poll
-
-```bash
-curl -sS -X POST "$REFEREE_URL/api/poll" -H "X-API-Key: $API_KEY"
-```
-
-## 6.4 Manual rotate
+Rotate:
 
 ```bash
 curl -sS -X POST "$REFEREE_URL/api/rotate" -H "X-API-Key: $API_KEY"
 ```
 
-## 6.5 Pause / Resume
+Pause/Resume:
 
 ```bash
 curl -sS -X POST "$REFEREE_URL/api/pause" -H "X-API-Key: $API_KEY"
 curl -sS -X POST "$REFEREE_URL/api/resume" -H "X-API-Key: $API_KEY"
 ```
 
-## 6.6 Skip to target series
-
-```bash
-curl -sS -X POST "$REFEREE_URL/api/rotate/skip" \
-  -H "X-API-Key: $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"target_series":4}'
-```
-
-## 6.7 Stop
+Stop:
 
 ```bash
 curl -sS -X POST "$REFEREE_URL/api/competition/stop" -H "X-API-Key: $API_KEY"
 ```
 
-## 7. Security Hardening Checklist
+## 5) Final Pre-Go-Live Order
 
-1. Keep `SSH_STRICT_HOST_KEY_CHECKING=true`
-2. Use unique SSH key for referee only
-3. Restrict node SSH access to referee IP
-4. Restrict referee API to admin network
-5. Use long random `ADMIN_API_KEY`
-6. Rotate API key between events
-7. Keep competition subnet isolated from Internet when possible
-8. Snapshot `referee.db` regularly
-9. Monitor `journalctl -u koth-referee` continuously during event
-
-## 8. Validation Checklist (Pre-Event)
-
-Run all before live start:
-
-1. `chronyc tracking` on all hosts
-2. `python setup_cli.py --series 1` on referee succeeds for all nodes
-3. `curl /api/status` returns expected `stopped` state
-4. Start competition and verify all `A/B/C` containers report `running` on all nodes
-5. Confirm events are being logged (`/api/events`)
-6. Confirm dashboard loads and updates
-7. Execute one rotation and verify next series deploys
-8. Confirm LB routes traffic to all nodes for active round ports
-
-## 9. Backups and Recovery
-
-## 9.1 Referee DB backup
-
-```bash
-cd /opt/KOTH_orchestrator/repo/referee-server
-cp referee.db "referee.db.backup.$(date +%F_%H%M%S)"
-```
-
-## 9.2 Referee restore
-
-```bash
-sudo systemctl stop koth-referee
-cp /path/to/backup/referee.db /opt/KOTH_orchestrator/repo/referee-server/referee.db
-sudo systemctl start koth-referee
-```
-
-## 9.3 Node redeploy (single node)
-
-From referee host (manual SSH example):
-
-```bash
-ssh -i ~/.ssh/koth_referee root@10.0.0.11 "cd /opt/KOTH_orchestrator/h1 && docker-compose down -v --remove-orphans && docker-compose up -d --force-recreate"
-```
-
-Then poll once:
-
-```bash
-curl -sS -X POST "$REFEREE_URL/api/poll" -H "X-API-Key: $API_KEY"
-```
-
-## 10. Troubleshooting
-
-## 10.1 `setup_cli.py` says compose missing
-
-Fix:
-
-1. Confirm `<REMOTE_SERIES_ROOT>/hN/docker-compose.yml` exists on node
-2. Confirm `REMOTE_SERIES_ROOT` exactly matches the real node path (`/opt/KOTH_orchestrator` or `/home/<user>/KOTH_orchestrator`)
-3. Confirm SSH user has access
-
-## 10.2 Referee cannot connect via SSH
-
-Fix:
-
-1. Test direct SSH command from referee
-2. Check `~/.ssh/koth_referee` path and permissions
-3. Check firewall on nodes (`22/tcp`)
-4. Check known_hosts when strict mode is enabled
-
-## 10.3 Containers deploy but scoring never changes
-
-Fix:
-
-1. Confirm `CONTAINER_NAME_TEMPLATE=machineH{series}{variant}`
-2. Verify `king.txt` exists in challenge containers
-3. Check `/api/events` for violations and unknown-team claims
-
-## 10.4 Nodes marked degraded for clock drift
-
-Fix:
-
-1. Verify chrony/NTP health
-2. Compare host times (`date +%s`) across nodes
-3. Reduce drift then poll again
-
-## 10.5 Unauthorized admin API responses
-
-Fix:
-
-1. Ensure `X-API-Key` header is present
-2. Ensure key matches `.env` `ADMIN_API_KEY`
-3. Restart referee service after key change
-
-## 11. Optional: Direct Root Compose Runtime (Single Host Testing)
-
-For local development only (not distributed production):
-
-```bash
-cd /opt/KOTH_orchestrator/repo
-docker-compose up -d --build machineH1A machineH1B machineH1C
-docker-compose ps
-./rotate.sh 2
-```
-
-Do not run this simultaneously with `/opt/KOTH_orchestrator/hN` per-series stacks on the same host/ports.
-
-## 12. Final Go-Live Sequence
-
-1. Verify all hosts up and time-synced
-2. Verify referee service healthy
-3. Verify SSH connectivity referee -> node1/2/3
-4. Verify HAProxy config loaded on referee host
-5. Backup empty `referee.db`
-6. Start competition via API
-7. Monitor status/events continuously
-8. Perform planned hourly rotations (automatic or manual override)
-9. Stop competition at event end
-10. Export final scores and archive logs/database
-
-
+1. Validate `node1` using `validate_koth_node.sh`
+2. Validate `node2` using `validate_koth_node.sh`
+3. Validate `node3` using `validate_koth_node.sh`
+4. Validate `referee` using `validate_referee_lb.sh`
+5. Start competition
+6. Confirm status/events
+7. Begin live traffic
