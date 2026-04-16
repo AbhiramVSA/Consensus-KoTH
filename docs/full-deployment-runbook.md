@@ -13,8 +13,8 @@ No separate LB machine is used.
 Use these hosts (example):
 
 1. `node1`: `nodeA@192.168.0.102`
-2. `node2`: `recon_admin@192.168.0.106`
-3. `node3`: `nodeC@192.168.0.103`
+2. `node2`: `recon_admin@192.168.0.103`
+3. `node3`: `nodeC@192.168.0.106`
 4. `referee` (Referee API + Scheduler + HAProxy): `recon_admin@192.168.0.100`
 
 Use `KOTH_orchestrator` naming consistently for paths.
