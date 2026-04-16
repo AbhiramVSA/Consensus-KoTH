@@ -12,10 +12,10 @@ No separate LB machine is used.
 
 Use these hosts (example):
 
-1. `node1`: `10.0.0.11`
-2. `node2`: `10.0.0.12`
-3. `node3`: `10.0.0.13`
-4. `referee` (Referee API + Scheduler + HAProxy): `10.0.0.20`
+1. `node1`: `192.168.0.102`
+2. `node2`: `192.168.0.106`
+3. `node3`: `192.168.0.102`
+4. `referee` (Referee API + Scheduler + HAProxy): `192.168.0.100`
 
 Use `KOTH_orchestrator` naming consistently for paths.
 
