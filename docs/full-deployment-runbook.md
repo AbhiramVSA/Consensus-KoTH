@@ -272,6 +272,7 @@ For the exact router/listener names and service-to-port map, use `docs/haproxy-f
 1. Keep the listener names and public ports stable.
 2. Update only the backend `server n1/n2/n3` host IPs unless the challenge compose port bindings changed.
 3. The router entries you should expect to edit are the HAProxy listener names such as `p10001`, `p10002`, `p10003`, `p10004`, ..., `p10072`.
+4. On the TP-Link `Add a Port Forwarding Entry` page, every TCP entry should point to the referee/LB host `192.168.0.12`, with `External Port == Internal Port`, and `Protocol = TCP`.
 
 Minimal H1 example:
 
@@ -337,6 +338,17 @@ Minimum edits for this deployment:
 3. Replace every `server n3 ...` host with `192.168.0.106`
 4. Keep the exposed frontend/listener ports and service names unchanged unless the series compose files changed too.
 5. Concretely, on the router page or in `haproxy.cfg`, edit the backend rows under listener entries like `p10001`, `p10002`, `p10003`, `p10004`, ..., `p10072`.
+
+Field-by-field on the TP-Link router page:
+
+1. `Service Name`: enter the HAProxy listener name, for example `p10001`
+2. `Device IP Address`: enter `192.168.0.12`
+3. `External Port`: choose `Individual Port` and enter the same listener port, for example `10001`
+4. `Internal Port`: enter the same port again, for example `10001`
+5. `Protocol`: choose `TCP`
+6. `Enable This Entry`: leave enabled
+
+Repeat one rule per TCP listener. Do not create a TCP forwarding rule for `10060`, because `10060/udp` is not handled by the current HAProxy TCP router config.
 
 After the restart, verify that:
 

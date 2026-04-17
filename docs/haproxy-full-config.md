@@ -42,6 +42,57 @@ Exact listener and service names to maintain on the router page / HAProxy config
 
 When editing the router page, update the backend server rows inside these exact listener entries. Do not rename the listener names unless you are updating the HAProxy file, validator expectations, and LB dashboard together.
 
+For the TP-Link `Add a Port Forwarding Entry` dialog shown in the router screenshots, create one entry per TCP listener using these exact field values:
+
+- `Service Name`: use the listener name, for example `p10001`
+- `Device IP Address`: `192.168.0.12`
+- `External Port`: choose `Individual Port` and enter the listener port, for example `10001`
+- `Internal Port`: enter the same value as the external port, for example `10001`
+- `Protocol`: `TCP`
+- `Enable This Entry`: checked
+
+Do **not** leave `Internal Port` blank on this router page for KOTH. Use the same port number on both sides.
+
+Copy-ready examples:
+
+| Service Name | Device IP Address | External Port | Internal Port | Protocol | Use For |
+|---|---|---:|---:|---|---|
+| `p10001` | `192.168.0.12` | `10001` | `10001` | `TCP` | `machineH1A` |
+| `p10002` | `192.168.0.12` | `10002` | `10002` | `TCP` | `machineH1B` Redis |
+| `p10003` | `192.168.0.12` | `10003` | `10003` | `TCP` | `machineH1B` SSH |
+| `p10004` | `192.168.0.12` | `10004` | `10004` | `TCP` | `machineH1C` |
+| `p10010` | `192.168.0.12` | `10010` | `10010` | `TCP` | `machineH2A` |
+| `p10011` | `192.168.0.12` | `10011` | `10011` | `TCP` | `machineH2B` |
+| `p10012` | `192.168.0.12` | `10012` | `10012` | `TCP` | `machineH2C` |
+| `p10020` | `192.168.0.12` | `10020` | `10020` | `TCP` | `machineH3A` SMB |
+| `p10021` | `192.168.0.12` | `10021` | `10021` | `TCP` | `machineH3A` SSH |
+| `p10022` | `192.168.0.12` | `10022` | `10022` | `TCP` | `machineH3B` |
+| `p10023` | `192.168.0.12` | `10023` | `10023` | `TCP` | `machineH3C` |
+| `p10030` | `192.168.0.12` | `10030` | `10030` | `TCP` | `machineH4A` |
+| `p10031` | `192.168.0.12` | `10031` | `10031` | `TCP` | `machineH4B` |
+| `p10032` | `192.168.0.12` | `10032` | `10032` | `TCP` | `machineH4C` |
+| `p10040` | `192.168.0.12` | `10040` | `10040` | `TCP` | `machineH5A` |
+| `p10041` | `192.168.0.12` | `10041` | `10041` | `TCP` | `machineH5B` |
+| `p10042` | `192.168.0.12` | `10042` | `10042` | `TCP` | `machineH5C` |
+| `p10050` | `192.168.0.12` | `10050` | `10050` | `TCP` | `machineH6A` distcc |
+| `p10051` | `192.168.0.12` | `10051` | `10051` | `TCP` | `machineH6A` NFS |
+| `p10052` | `192.168.0.12` | `10052` | `10052` | `TCP` | `machineH6B` MongoDB |
+| `p10053` | `192.168.0.12` | `10053` | `10053` | `TCP` | `machineH6C` HTTPS |
+| `p10054` | `192.168.0.12` | `10054` | `10054` | `TCP` | `machineH6B` SSH |
+| `p10055` | `192.168.0.12` | `10055` | `10055` | `TCP` | `machineH6C` SSH |
+| `p10061` | `192.168.0.12` | `10061` | `10061` | `TCP` | `machineH7A` SSH |
+| `p10062` | `192.168.0.12` | `10062` | `10062` | `TCP` | `machineH7B` |
+| `p10063` | `192.168.0.12` | `10063` | `10063` | `TCP` | `machineH7C` |
+| `p10070` | `192.168.0.12` | `10070` | `10070` | `TCP` | `machineH8A` |
+| `p10071` | `192.168.0.12` | `10071` | `10071` | `TCP` | `machineH8B` |
+| `p10072` | `192.168.0.12` | `10072` | `10072` | `TCP` | `machineH8C` |
+
+Special case:
+
+- `10060/udp` for `machineH7A` SNMP is **not** covered by the current HAProxy TCP configuration.
+- Do not create a fake TCP rule named `p10060` pointing at the referee/LB host.
+- If you need `10060/udp` exposed externally, document and deploy a separate UDP forwarding path first.
+
 ```cfg
 global
     log /dev/log local0
