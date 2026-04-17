@@ -189,6 +189,22 @@ class Database:
                     (name, now),
                 )
 
+    def create_team(self, name: str) -> dict[str, Any]:
+        now = datetime.now(UTC).isoformat()
+        with self.tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO teams (name, status, offense_count, total_points, created_at)
+                VALUES (?, 'active', 0, 0, ?)
+                """,
+                (name, now),
+            )
+            row = conn.execute(
+                "SELECT name, status, offense_count, total_points FROM teams WHERE name=?",
+                (name,),
+            ).fetchone()
+        return dict(row)
+
     def team_exists(self, name: str) -> bool:
         with self._lock:
             row = self._conn.execute("SELECT 1 FROM teams WHERE name=?", (name,)).fetchone()
@@ -204,6 +220,32 @@ class Database:
                 "SELECT name, status, offense_count, total_points FROM teams ORDER BY total_points DESC, name ASC"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def set_team_status(
+        self,
+        name: str,
+        *,
+        status: str,
+        offense_count: int | None = None,
+    ) -> dict[str, Any]:
+        assignments = ["status=?"]
+        params: list[Any] = [status]
+        if offense_count is not None:
+            assignments.append("offense_count=?")
+            params.append(offense_count)
+        params.append(name)
+        with self.tx() as conn:
+            conn.execute(
+                f"UPDATE teams SET {', '.join(assignments)} WHERE name=?",
+                tuple(params),
+            )
+            row = conn.execute(
+                "SELECT name, status, offense_count, total_points FROM teams WHERE name=?",
+                (name,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(name)
+        return dict(row)
 
     def team_count(self) -> int:
         with self._lock:

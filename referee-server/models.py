@@ -86,6 +86,7 @@ class ValidationResponse(BaseModel):
     valid: bool
     complete_snapshot_matrix: bool
     healthy_nodes: int
+    total_nodes: int
     min_healthy_nodes: int
     healthy_counts_by_variant: dict[str, int]
     issues: list[str]
@@ -105,6 +106,15 @@ class SkipRequest(BaseModel):
 
 class TeamIn(BaseModel):
     name: str
+
+
+class TeamStatusUpdateResponse(BaseModel):
+    ok: bool
+    name: str
+    status: TeamStatus
+    offense_count: int
+    total_points: float
+    detail: str
 
 
 class WebhookPayload(BaseModel):

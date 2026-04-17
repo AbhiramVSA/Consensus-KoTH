@@ -25,6 +25,11 @@ class RuntimeGuardError(RuntimeError):
 
 
 class RefereeRuntime:
+    _VIOLATION_EXEMPTIONS: dict[tuple[int, str], set[str]] = {
+        (1, "B"): {"authkeys_changed"},
+        (7, "B"): {"shadow_changed"},
+    }
+
     def __init__(self, db: Database, ssh_pool: SSHClientPool):
         self.db = db
         self.ssh_pool = ssh_pool
@@ -683,6 +688,7 @@ class RefereeRuntime:
             "valid": not issues,
             "complete_snapshot_matrix": not any(issue.startswith("missing snapshots:") or issue.startswith("unexpected snapshots:") for issue in issues),
             "healthy_nodes": healthy_hosts,
+            "total_nodes": len(SETTINGS.node_hosts),
             "min_healthy_nodes": SETTINGS.min_healthy_nodes,
             "healthy_counts_by_variant": healthy_counts,
             "issues": issues,
@@ -892,10 +898,11 @@ class RefereeRuntime:
             ports_sig = self.poller.stable_signature(snap.sections.get("PORTS", ""))
 
             key = (snap.node_host, snap.variant)
-            bucket = violations.setdefault(key, [])
+            hits: list[ViolationHit] = []
+            exempted = self._VIOLATION_EXEMPTIONS.get((series, snap.variant), set())
 
             if baseline.get("ports_sig") and ports_sig and baseline["ports_sig"] != ports_sig:
-                bucket.append(
+                hits.append(
                     ViolationHit(
                         12,
                         "service_ports_changed",
@@ -903,7 +910,7 @@ class RefereeRuntime:
                     )
                 )
             if baseline.get("iptables_sig") and iptables_sig and baseline["iptables_sig"] != iptables_sig:
-                bucket.append(
+                hits.append(
                     ViolationHit(
                         13,
                         "iptables_changed",
@@ -911,27 +918,38 @@ class RefereeRuntime:
                     )
                 )
             if (
-                (
-                    baseline.get("shadow_hash") is not None
-                    and baseline["shadow_hash"] != shadow_hash
-                )
-                or (
-                    baseline.get("authkeys_hash") is not None
-                    and baseline["authkeys_hash"] != authkeys_hash
-                )
+                baseline.get("shadow_hash") is not None
+                and baseline["shadow_hash"] != shadow_hash
             ):
-                bucket.append(
+                hits.append(
                     ViolationHit(
                         14,
-                        "credential_material_changed",
+                        "shadow_changed",
                         {
                             "shadow_expected": baseline.get("shadow_hash"),
                             "shadow_actual": shadow_hash,
+                        },
+                    )
+                )
+            if (
+                baseline.get("authkeys_hash") is not None
+                and baseline["authkeys_hash"] != authkeys_hash
+            ):
+                hits.append(
+                    ViolationHit(
+                        15,
+                        "authkeys_changed",
+                        {
                             "authkeys_expected": baseline.get("authkeys_hash"),
                             "authkeys_actual": authkeys_hash,
                         },
                     )
                 )
+            if hits:
+                bucket = violations.setdefault(key, [])
+                for hit in hits:
+                    if hit.offense_name not in exempted:
+                        bucket.append(hit)
 
     def poll_once(self) -> None:
         with self._lock:
@@ -1107,7 +1125,9 @@ class RefereeRuntime:
             # Escalate once per team per cycle.
             snapshot_map = {(s.node_host, s.variant): s for s in snapshots}
             teams_to_escalate: set[str] = set()
-            for key in violations:
+            for key, hits in violations.items():
+                if not hits:
+                    continue
                 snap = snapshot_map.get(key)
                 if snap is None or not snap.king:
                     continue

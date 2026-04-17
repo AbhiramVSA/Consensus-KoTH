@@ -72,7 +72,7 @@ docker exec "$container_id" sh -lc '
   echo "===CRON===";
   crontab -l 2>/dev/null; cat /etc/cron.d/* 2>/dev/null | grep -i king;
   echo "===PROCS===";
-  ps aux 2>/dev/null | grep -E "inotify|fswatch|king\\.txt" | grep -v grep;
+  ps aux 2>/dev/null | grep -E "inotify|fswatch|incrond" | grep -v grep;
   echo "===IPTABLES===";
   iptables -L -n 2>/dev/null;
   echo "===PORTS===";
@@ -255,7 +255,7 @@ fi;
         if re.search(r"king", cron, re.IGNORECASE):
             out.append(ViolationHit(7, "cron_king_persistence", {"cron": cron[:500]}))
 
-        if re.search(r"inotify|fswatch|king\.txt", procs, re.IGNORECASE):
+        if re.search(r"inotify|fswatch|incrond", procs, re.IGNORECASE):
             out.append(ViolationHit(8, "watchdog_process", {"procs": procs[:500]}))
 
         return out

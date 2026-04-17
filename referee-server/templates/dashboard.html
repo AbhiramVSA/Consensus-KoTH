@@ -215,6 +215,11 @@
             <h2>Leaderboard</h2>
             <p>Standings, penalties, and score pressure.</p>
           </header>
+          <div class="inline-form">
+            <label for="newTeamName">New Team</label>
+            <input id="newTeamName" type="text" maxlength="128" placeholder="Team name" />
+            <button id="createTeamBtn" type="button">Create</button>
+          </div>
           <div class="table-wrap tall">
             <table>
               <thead>
@@ -223,6 +228,7 @@
                   <th>Status</th>
                   <th>Offenses</th>
                   <th>Points</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="teamsTable"></tbody>
@@ -517,6 +523,12 @@
             <td><span class="pill ${pillToneClass(team.status)}">${escapeHtml(team.status)}</span></td>
             <td>${team.offense_count}</td>
             <td>${team.total_points.toFixed(1)}</td>
+            <td>
+              ${team.status === 'banned'
+                ? `<button type="button" data-team-action="unban" data-team-name="${escapeHtml(team.name)}">Unban</button>`
+                : `<button type="button" data-team-action="ban" data-team-name="${escapeHtml(team.name)}">Ban</button>`
+              }
+            </td>
           </tr>
         `)
         .join('');
@@ -627,7 +639,7 @@
           case 'validate': {
             const payload = await post('/api/recover/validate');
             logAction(
-              `validate: valid=${payload.valid} healthy_nodes=${payload.healthy_nodes}/${payload.min_healthy_nodes} issues=${payload.issues.length}`
+              `validate: valid=${payload.valid} healthy=${payload.healthy_nodes} of ${payload.total_nodes} nodes, minimum ${payload.min_healthy_nodes}, issues=${payload.issues.length}`
             );
             break;
           }
@@ -674,8 +686,52 @@
       }
     }
 
+    async function createTeam() {
+      const input = document.getElementById('newTeamName');
+      const name = input.value.trim();
+      if (!name) {
+        logAction('team creation failed: enter a team name');
+        return;
+      }
+      try {
+        const payload = await post('/api/admin/teams', {name});
+        input.value = '';
+        logAction(`team created: ${payload.name}`);
+        await refresh();
+      } catch (error) {
+        logAction(`team create failed: ${error.message}`);
+      }
+    }
+
+    async function manageTeam(action, teamName) {
+      const endpoint = action === 'unban'
+        ? `/api/admin/teams/${encodeURIComponent(teamName)}/unban`
+        : `/api/admin/teams/${encodeURIComponent(teamName)}/ban`;
+      try {
+        const payload = await post(endpoint);
+        logAction(`${action}: ${payload.name} -> ${payload.status}`);
+        await refresh();
+      } catch (error) {
+        logAction(`${action} failed for ${teamName}: ${error.message}`);
+      }
+    }
+
     document.querySelectorAll('[data-action]').forEach(button => {
       button.addEventListener('click', () => runAction(button.dataset.action));
+    });
+    document.getElementById('createTeamBtn').addEventListener('click', createTeam);
+    document.getElementById('newTeamName').addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        createTeam();
+      }
+    });
+    document.getElementById('teamsTable').addEventListener('click', event => {
+      const button = event.target.closest('[data-team-action]');
+      if (!button) {
+        return;
+      }
+      manageTeam(button.dataset.teamAction, button.dataset.teamName);
     });
 
     setInterval(refresh, 5000);

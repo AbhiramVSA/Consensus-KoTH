@@ -71,6 +71,7 @@ Mark each item explicitly as:
   - `previous_series`
   - `fault_reason`
   - `last_validated_series`
+  - `healthy_nodes`, `total_nodes`, and `min_healthy_nodes` from `/api/recover/validate`
   - `active_jobs`
 - [ ] Local validation script passes:
   - `bash qa/deployment/validate_referee_lb.sh --series-root <INSTALL_ROOT> --referee-dir <INSTALL_ROOT>/repo/referee-server --api-url http://127.0.0.1:8000`
@@ -95,5 +96,6 @@ Mark each item explicitly as:
 - [ ] Referee+LB validated
 - [ ] Dry run completed (`start -> runtime -> pause -> validate -> resume -> rotate -> stop`)
 - [ ] Recovery path verified (`faulted/paused -> /api/recover/validate -> /api/recover/redeploy -> resume`)
+- [ ] Team admin path verified (`/api/admin/teams -> ban -> unban`)
 - [ ] Incident rollback owner assigned
 - [ ] Notes:

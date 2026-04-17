@@ -478,11 +478,29 @@ curl -sS -X POST "$REFEREE_URL/api/recover/validate" -H "X-API-Key: $API_KEY" | 
 curl -sS -X POST "$REFEREE_URL/api/recover/redeploy" -H "X-API-Key: $API_KEY" | jq .
 ```
 
+Team management:
+
+```bash
+curl -sS -X POST "$REFEREE_URL/api/admin/teams" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Team Alpha"}' | jq .
+
+curl -sS -X POST "$REFEREE_URL/api/admin/teams/Team%20Alpha/ban" \
+  -H "X-API-Key: $API_KEY" | jq .
+
+curl -sS -X POST "$REFEREE_URL/api/admin/teams/Team%20Alpha/unban" \
+  -H "X-API-Key: $API_KEY" | jq .
+```
+
 Lifecycle guidance:
 
 1. `paused` means the current series is still expected to be valid, but scoring and rotation are halted.
 2. `faulted` means the runtime detected an unsafe series state or failed recovery path. Do not use `resume` until validation or redeploy succeeds.
 3. Use `/api/runtime` for operator truth. It exposes `competition_status`, `previous_series`, `fault_reason`, `last_validated_series`, and active jobs.
+4. `/api/recover/validate` reports cluster health as `healthy_nodes`, `total_nodes`, and `min_healthy_nodes`. In the dashboard this is rendered as `healthy=X of Y nodes, minimum Z required`; `3/2` is no longer a valid interpretation.
+5. Team creation uses the same validity rules as scoring claims. Names like `unclaimed` or malformed control-character strings are rejected.
+6. Manual `unban` resets `offense_count` to `0` and returns the team to `active`, but it does not modify `total_points`.
 
 Stop:
 

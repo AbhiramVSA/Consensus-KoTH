@@ -22,9 +22,12 @@ from models import (
     RuntimeResponse,
     SkipRequest,
     StatusResponse,
+    TeamIn,
     TeamResponse,
+    TeamStatusUpdateResponse,
     ValidationResponse,
 )
+from poller import Poller
 from scheduler import RefereeRuntime, RuntimeGuardError
 from ssh_client import SSHClientPool
 
@@ -349,6 +352,75 @@ def api_lb_status() -> LbStatusResponse:
 @app.get("/api/teams", response_model=list[TeamResponse], dependencies=[Depends(require_admin_api_key)])
 def api_teams() -> list[TeamResponse]:
     return [TeamResponse(**item) for item in db.list_teams()]
+
+
+@app.post("/api/admin/teams", response_model=TeamStatusUpdateResponse, dependencies=[Depends(require_admin_api_key)])
+def api_create_team(payload: TeamIn) -> TeamStatusUpdateResponse:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="team name is required")
+    if not Poller.is_valid_team_claim(name):
+        raise HTTPException(status_code=422, detail="team name is not a valid claim")
+    if db.team_exists(name):
+        raise HTTPException(status_code=409, detail="team already exists")
+    team = db.create_team(name)
+    db.add_event(
+        event_type="admin_action",
+        severity="info",
+        team_name=name,
+        detail="Team created from dashboard",
+    )
+    return TeamStatusUpdateResponse(
+        ok=True,
+        detail="Team created",
+        **team,
+    )
+
+
+@app.post(
+    "/api/admin/teams/{team_name}/ban",
+    response_model=TeamStatusUpdateResponse,
+    dependencies=[Depends(require_admin_api_key)],
+)
+def api_ban_team(team_name: str) -> TeamStatusUpdateResponse:
+    team = db.get_team(team_name)
+    if team is None:
+        raise HTTPException(status_code=404, detail="team not found")
+    updated = db.set_team_status(team_name, status="banned")
+    db.add_event(
+        event_type="admin_action",
+        severity="warning",
+        team_name=team_name,
+        detail="Team manually banned from dashboard",
+    )
+    return TeamStatusUpdateResponse(
+        ok=True,
+        detail="Team banned",
+        **updated,
+    )
+
+
+@app.post(
+    "/api/admin/teams/{team_name}/unban",
+    response_model=TeamStatusUpdateResponse,
+    dependencies=[Depends(require_admin_api_key)],
+)
+def api_unban_team(team_name: str) -> TeamStatusUpdateResponse:
+    team = db.get_team(team_name)
+    if team is None:
+        raise HTTPException(status_code=404, detail="team not found")
+    updated = db.set_team_status(team_name, status="active", offense_count=0)
+    db.add_event(
+        event_type="admin_action",
+        severity="info",
+        team_name=team_name,
+        detail="Team manually unbanned from dashboard",
+    )
+    return TeamStatusUpdateResponse(
+        ok=True,
+        detail="Team unbanned",
+        **updated,
+    )
 
 
 @app.get("/api/events", response_model=list[EventResponse], dependencies=[Depends(require_admin_api_key)])

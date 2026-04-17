@@ -410,7 +410,116 @@ class RuntimeSafetyTests(unittest.TestCase):
         )
 
         hits = violations[("192.168.0.102", "A")]
-        self.assertEqual(hits[0].offense_name, "credential_material_changed")
+        self.assertEqual(hits[0].offense_name, "authkeys_changed")
+
+    def test_h1b_authkeys_change_is_exempt_from_baseline_violation(self) -> None:
+        runtime, db = self.make_runtime()
+        runtime._capture_baselines(
+            1,
+            [
+                VariantSnapshot(
+                    node_host="192.168.0.102",
+                    variant="B",
+                    king="unclaimed",
+                    king_mtime_epoch=1,
+                    status="running",
+                    sections={"AUTHKEYS": "", "SHADOW": "", "IPTABLES": "ok", "PORTS": "ok"},
+                    checked_at=datetime.now(UTC),
+                )
+            ],
+        )
+
+        violations: dict[tuple[str, str], list[object]] = {}
+        runtime._merge_baseline_violations(
+            series=1,
+            snapshots=[
+                VariantSnapshot(
+                    node_host="192.168.0.102",
+                    variant="B",
+                    king="Team Alpha",
+                    king_mtime_epoch=2,
+                    status="running",
+                    sections={
+                        "AUTHKEYS": f"{'a' * 64}  /root/.ssh/authorized_keys",
+                        "SHADOW": "",
+                        "IPTABLES": "ok",
+                        "PORTS": "ok",
+                    },
+                    checked_at=datetime.now(UTC),
+                )
+            ],
+            violations=violations,
+        )
+
+        self.assertEqual(violations.get(("192.168.0.102", "B")), [])
+
+    def test_h7b_shadow_change_is_exempt_from_baseline_violation(self) -> None:
+        runtime, db = self.make_runtime()
+        runtime._capture_baselines(
+            7,
+            [
+                VariantSnapshot(
+                    node_host="192.168.0.102",
+                    variant="B",
+                    king="unclaimed",
+                    king_mtime_epoch=1,
+                    status="running",
+                    sections={"AUTHKEYS": "", "SHADOW": "", "IPTABLES": "ok", "PORTS": "ok"},
+                    checked_at=datetime.now(UTC),
+                )
+            ],
+        )
+
+        violations: dict[tuple[str, str], list[object]] = {}
+        runtime._merge_baseline_violations(
+            series=7,
+            snapshots=[
+                VariantSnapshot(
+                    node_host="192.168.0.102",
+                    variant="B",
+                    king="Team Alpha",
+                    king_mtime_epoch=2,
+                    status="running",
+                    sections={
+                        "AUTHKEYS": "",
+                        "SHADOW": f"{'b' * 64}  /etc/shadow",
+                        "IPTABLES": "ok",
+                        "PORTS": "ok",
+                    },
+                    checked_at=datetime.now(UTC),
+                )
+            ],
+            violations=violations,
+        )
+
+        self.assertEqual(violations.get(("192.168.0.102", "B")), [])
+
+    def test_baseline_snapshots_without_hits_do_not_escalate_team(self) -> None:
+        runtime, db = self.make_runtime()
+        db.upsert_team_names(["Team Alpha"])
+        db.set_competition_state(status="running", current_series=1)
+
+        snapshots = [
+            VariantSnapshot(
+                node_host=node_host,
+                variant=variant,
+                king="Team Alpha" if variant == "A" and node_host != "192.168.0.106" else "unclaimed",
+                king_mtime_epoch=1000,
+                status="running",
+                sections={"AUTHKEYS": "", "SHADOW": "", "IPTABLES": "ok", "PORTS": "ok", "NODE_EPOCH": "1000"},
+                checked_at=datetime.now(UTC),
+            )
+            for node_host in SETTINGS.node_hosts
+            for variant in SETTINGS.variants
+        ]
+        runtime._capture_baselines(1, snapshots)
+        runtime.poller.run_cycle = Mock(return_value=(snapshots, {}))
+
+        runtime.poll_once()
+
+        team = db.get_team("Team Alpha")
+        self.assertEqual(team["offense_count"], 0)
+        self.assertEqual(team["status"], "active")
 
     def test_pause_blocks_scoring(self) -> None:
         runtime, db = self.make_runtime()
@@ -608,6 +717,7 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertTrue(summary["valid"])
         self.assertTrue(summary["complete_snapshot_matrix"])
         self.assertEqual(summary["healthy_nodes"], 3)
+        self.assertEqual(summary["total_nodes"], 3)
         self.assertEqual(summary["min_healthy_nodes"], 2)
         self.assertEqual(summary["healthy_counts_by_variant"]["A"], 3)
         state = db.get_competition()
@@ -696,6 +806,29 @@ class PollerCompletenessTests(unittest.TestCase):
             {"B", "C"},
         )
         self.assertEqual(violations, {})
+
+    def test_watchdog_detection_does_not_flag_one_shot_king_write_command(self) -> None:
+        poller = Poller(DummySSH())
+        snap = VariantSnapshot(
+            node_host="192.168.0.102",
+            variant="C",
+            king="Team Alpha",
+            king_mtime_epoch=1000,
+            status="running",
+            sections={
+                "KING_STAT": "1000 644 root:root regular file",
+                "KING": "Team Alpha",
+                "ROOT_DIR": "700",
+                "IMMUTABLE": "",
+                "CRON": "",
+                "PROCS": "root  42  0.0  bash -p -c 'echo Team Alpha > /root/king.txt'",
+            },
+            checked_at=datetime.now(UTC),
+        )
+
+        hits = poller._detect_violations(snap)
+
+        self.assertFalse(any(hit.offense_name == "watchdog_process" for hit in hits))
 
 
 class ConfigLoadingTests(unittest.TestCase):
@@ -850,6 +983,7 @@ backend h1a_nodes
     def test_teams_and_events_endpoints_require_admin_key(self) -> None:
         self.assertEqual(self.client.get("/api/teams").status_code, 401)
         self.assertEqual(self.client.get("/api/events").status_code, 401)
+        self.assertEqual(self.client.post("/api/admin/teams", json={"name": "Team Alpha"}).status_code, 401)
 
     def test_recover_validate_endpoint_requires_admin_key(self) -> None:
         response = self.client.post("/api/recover/validate")
@@ -885,8 +1019,36 @@ backend h1a_nodes
         self.assertTrue(payload["valid"])
         self.assertTrue(payload["complete_snapshot_matrix"])
         self.assertEqual(payload["healthy_nodes"], 3)
+        self.assertEqual(payload["total_nodes"], 3)
         self.assertEqual(payload["min_healthy_nodes"], 2)
         self.assertEqual(payload["healthy_counts_by_variant"]["A"], 3)
+
+    def test_team_admin_endpoint_rejects_invalid_claim_names(self) -> None:
+        self.app_module.app.dependency_overrides[self.app_module.require_admin_api_key] = lambda: None
+        self.addCleanup(self.app_module.app.dependency_overrides.clear)
+
+        response = self.client.post("/api/admin/teams", json={"name": "unclaimed"})
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("valid claim", response.json()["detail"])
+
+    def test_team_admin_endpoints_create_ban_and_unban(self) -> None:
+        self.app_module.app.dependency_overrides[self.app_module.require_admin_api_key] = lambda: None
+        self.addCleanup(self.app_module.app.dependency_overrides.clear)
+
+        create_response = self.client.post("/api/admin/teams", json={"name": "Team Alpha"})
+        self.assertEqual(create_response.status_code, 200)
+        self.assertEqual(create_response.json()["status"], "active")
+
+        ban_response = self.client.post("/api/admin/teams/Team%20Alpha/ban")
+        self.assertEqual(ban_response.status_code, 200)
+        self.assertEqual(ban_response.json()["status"], "banned")
+
+        self.app_module.db.increment_team_offense("Team Alpha")
+        unban_response = self.client.post("/api/admin/teams/Team%20Alpha/unban")
+        self.assertEqual(unban_response.status_code, 200)
+        self.assertEqual(unban_response.json()["status"], "active")
+        self.assertEqual(unban_response.json()["offense_count"], 0)
 
     def test_recover_redeploy_endpoint_returns_paused_recovery_result(self) -> None:
         self.app_module.app.dependency_overrides[self.app_module.require_admin_api_key] = lambda: None

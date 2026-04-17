@@ -6,6 +6,7 @@
 - `Series HN/docker-compose.yml` files are the per-series deploy artifacts copied into node-local `hN/` directories and validated by the referee before a series becomes active.
 - Root-level `docker-compose.yml` and `rotate.sh` are local/dev-only artifacts and must not be treated as the production control plane.
 - Operators should use `/api/runtime`, `/api/recover/validate`, and `/api/recover/redeploy` for runtime inspection and recovery.
+- The dashboard now includes admin team controls: create teams, manually ban a team, and manually unban a team. New team names must satisfy the same claim rules as `king.txt` ownership, so reserved or malformed names such as `unclaimed` are rejected.
 
 ## 🧩 Machine Matrix
 
@@ -47,6 +48,7 @@
 - Competition startup requires a non-empty team roster. Keep an existing `referee.db` team table or configure `BACKEND_URL` to return `/teams`.
 - Runtime lifecycle states are explicit: `starting`, `running`, `paused`, `rotating`, `faulted`, `stopping`, `stopped`.
 - `paused` means intentionally halted and resumable after validation. `faulted` means unsafe state; use recovery APIs before resuming.
+- `/api/recover/validate` now reports both `healthy_nodes` and `total_nodes`; the dashboard displays this as `healthy=X of Y nodes, minimum Z required`.
 - `POST /api/competition/stop` stops the competition, not the referee daemon. To stop the actual service, use `sudo systemctl stop koth-referee` on the referee host.
 - Start command:
 
