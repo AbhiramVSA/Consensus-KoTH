@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -12,6 +15,9 @@ from config import SETTINGS
 from db import Database
 from models import (
     EventResponse,
+    LbServerResponse,
+    LbServiceResponse,
+    LbStatusResponse,
     RecoveryResponse,
     RuntimeResponse,
     SkipRequest,
@@ -34,6 +40,10 @@ ssh_pool = SSHClientPool(
     host_target_overrides=SETTINGS.ssh_target_overrides(),
 )
 runtime = RefereeRuntime(db, ssh_pool)
+HAPROXY_CONFIG_PATH = Path("/etc/haproxy/haproxy.cfg")
+LISTEN_RE = re.compile(r"^listen\s+(\S+)")
+BIND_RE = re.compile(r"^bind\s+\*?:(\d+)")
+SERVER_RE = re.compile(r"^server\s+(\S+)\s+([0-9.]+):(\d+)")
 
 
 @asynccontextmanager
@@ -67,9 +77,169 @@ def require_admin_api_key(x_api_key: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
+def _parse_endpoint_port(endpoint: str) -> int | None:
+    if endpoint.startswith("["):
+        parts = endpoint.rsplit("]:", 1)
+        if len(parts) != 2:
+            return None
+        try:
+            return int(parts[1])
+        except ValueError:
+            return None
+    parts = endpoint.rsplit(":", 1)
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
+def _parse_endpoint_host_port(endpoint: str) -> tuple[str, int] | None:
+    if endpoint.startswith("["):
+        parts = endpoint.rsplit("]:", 1)
+        if len(parts) != 2:
+            return None
+        host = parts[0].lstrip("[")
+        try:
+            return host, int(parts[1])
+        except ValueError:
+            return None
+    parts = endpoint.rsplit(":", 1)
+    if len(parts) != 2:
+        return None
+    host = parts[0]
+    try:
+        return host, int(parts[1])
+    except ValueError:
+        return None
+
+
+def _haproxy_services() -> list[dict]:
+    if not HAPROXY_CONFIG_PATH.is_file():
+        return []
+
+    services: list[dict] = []
+    current: dict | None = None
+    for raw_line in HAPROXY_CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        listen_match = LISTEN_RE.match(line)
+        if listen_match:
+            current = {"name": listen_match.group(1), "bind_port": None, "servers": []}
+            services.append(current)
+            continue
+
+        if current is None:
+            continue
+
+        bind_match = BIND_RE.match(line)
+        if bind_match:
+            current["bind_port"] = int(bind_match.group(1))
+            continue
+
+        server_match = SERVER_RE.match(line)
+        if server_match:
+            current["servers"].append(
+                {
+                    "name": server_match.group(1),
+                    "host": server_match.group(2),
+                    "port": int(server_match.group(3)),
+                }
+            )
+
+    return [service for service in services if service.get("bind_port") and service.get("servers")]
+
+
+def _ss_established_rows() -> list[tuple[str, str]]:
+    try:
+        proc = subprocess.run(
+            ["ss", "-Htn", "state", "established"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return []
+
+    rows: list[tuple[str, str]] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        rows.append((parts[-2], parts[-1]))
+    return rows
+
+
+def _lb_status() -> LbStatusResponse:
+    services = _haproxy_services()
+    if not services:
+        return LbStatusResponse(
+            configured=False,
+            services=[],
+            total_inbound_connections=0,
+            total_backend_connections=0,
+            note=f"HAProxy config not found at {HAPROXY_CONFIG_PATH}",
+        )
+
+    rows = _ss_established_rows()
+    inbound_by_port: dict[int, int] = {}
+    backend_by_host_port: dict[tuple[str, int], int] = {}
+
+    for local, peer in rows:
+        local_port = _parse_endpoint_port(local)
+        if local_port is not None:
+            inbound_by_port[local_port] = inbound_by_port.get(local_port, 0) + 1
+
+        host_port = _parse_endpoint_host_port(peer)
+        if host_port is not None:
+            backend_by_host_port[host_port] = backend_by_host_port.get(host_port, 0) + 1
+
+    response_services: list[LbServiceResponse] = []
+    total_inbound = 0
+    total_backend = 0
+    for service in services:
+        bind_port = int(service["bind_port"])
+        servers: list[LbServerResponse] = []
+        backend_total = 0
+        for server in service["servers"]:
+            active = backend_by_host_port.get((server["host"], int(server["port"])), 0)
+            backend_total += active
+            servers.append(
+                LbServerResponse(
+                    name=str(server["name"]),
+                    host=str(server["host"]),
+                    port=int(server["port"]),
+                    active_connections=active,
+                )
+            )
+        inbound = inbound_by_port.get(bind_port, 0)
+        total_inbound += inbound
+        total_backend += backend_total
+        response_services.append(
+            LbServiceResponse(
+                name=str(service["name"]),
+                bind_port=bind_port,
+                inbound_connections=inbound,
+                backend_connections=backend_total,
+                servers=servers,
+            )
+        )
+
+    return LbStatusResponse(
+        configured=True,
+        services=response_services,
+        total_inbound_connections=total_inbound,
+        total_backend_connections=total_backend,
+        note=None,
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    return templates.TemplateResponse(request, "dashboard.html", {"request": request})
 
 
 @app.get("/api/status", response_model=StatusResponse)
@@ -124,6 +294,11 @@ def api_runtime() -> RuntimeResponse:
         ),
         active_jobs=jobs,
     )
+
+
+@app.get("/api/lb", response_model=LbStatusResponse)
+def api_lb_status() -> LbStatusResponse:
+    return _lb_status()
 
 
 @app.get("/api/teams", response_model=list[TeamResponse])

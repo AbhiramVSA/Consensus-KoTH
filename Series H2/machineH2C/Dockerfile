@@ -33,20 +33,7 @@ RUN useradd -m -s /bin/bash tomcatuser && \
     chown -R tomcatuser:tomcatuser /usr/local/tomcat
 
 # Deterministic PwnKit simulation: vulnerable pkexec replacement reachable from the low-priv shell.
-RUN cat <<'EOF' > /tmp/pkexec.c
-#include <unistd.h>
-#include <stdlib.h>
-
-int main(int argc, char *argv[]) {
-    setgid(0);
-    setuid(0);
-    if (argc > 1) {
-        execvp(argv[1], &argv[1]);
-    }
-    execl("/bin/bash", "bash", "-p", NULL);
-    return 0;
-}
-EOF
+COPY pkexec.c /tmp/pkexec.c
 RUN gcc /tmp/pkexec.c -o /usr/bin/pkexec && \
     chown root:root /usr/bin/pkexec && \
     chmod 4755 /usr/bin/pkexec && \

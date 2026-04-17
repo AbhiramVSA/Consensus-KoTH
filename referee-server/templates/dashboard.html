@@ -4,82 +4,671 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>KOTH Referee</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <main class="page">
-    <header class="bar">
-      <h1>KOTH Referee Dashboard</h1>
-      <div class="actions">
-        <button onclick="post('/api/competition/start')">Start</button>
-        <button onclick="post('/api/competition/stop')">Stop</button>
-        <button onclick="post('/api/pause')">Pause</button>
-        <button onclick="post('/api/resume')">Resume</button>
-        <button onclick="post('/api/rotate')">Rotate</button>
-      </div>
+    <header class="masthead">
+      <section class="brand">
+        <p class="eyebrow">Referee System</p>
+        <h1>KOTH Control Surface</h1>
+        <p class="subtitle">Command, monitor, and recover the event from one surface.</p>
+      </section>
+      <aside class="hero-glass">
+        <label for="apiKey">API Key</label>
+        <input id="apiKey" type="password" placeholder="X-API-Key" autocomplete="off" />
+      </aside>
     </header>
 
-    <section class="panel" id="statusPanel"></section>
+    <section class="overview-strip">
+      <article class="metric">
+        <span class="metric-label">Competition</span>
+        <strong id="metricStatus">n/a</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">Current Series</span>
+        <strong id="metricSeries">n/a</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">Active Teams</span>
+        <strong id="metricTeams">0</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">Containers</span>
+        <strong id="metricContainers">0</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">Next Rotation</span>
+        <strong id="metricRotation">n/a</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">Fault</span>
+        <strong id="metricFault">clear</strong>
+      </article>
+    </section>
 
-    <section class="grid">
-      <article class="panel">
-        <h2>Top Teams</h2>
-        <ol id="teamsList"></ol>
-      </article>
-      <article class="panel">
-        <h2>Recent Events</h2>
-        <ul id="eventsList"></ul>
-      </article>
+    <section class="ops-shell">
+      <aside class="command-rail">
+        <article class="panel">
+          <header class="panel-head">
+            <h2>Command</h2>
+            <p>Primary operator actions.</p>
+          </header>
+          <div class="action-groups">
+            <section class="action-group">
+              <div class="group-head">
+                <span class="group-label">Competition</span>
+                <p>Lifecycle control.</p>
+              </div>
+              <div class="control-grid two-up">
+                <button data-action="start">Start</button>
+                <button data-action="stop">Stop</button>
+                <button data-action="pause">Pause</button>
+                <button data-action="resume">Resume</button>
+              </div>
+            </section>
+
+            <section class="action-group">
+              <div class="group-head">
+                <span class="group-label">Rotation</span>
+                <p>Series movement and scheduler checks.</p>
+              </div>
+              <div class="control-grid two-up">
+                <button data-action="rotate">Rotate Next</button>
+                <button data-action="restart">Restart Series</button>
+                <button data-action="poll">Poll Once</button>
+                <button data-action="validate">Validate</button>
+              </div>
+            </section>
+
+            <section class="action-group">
+              <div class="group-head">
+                <span class="group-label">Recovery</span>
+                <p>Deployment repair path.</p>
+              </div>
+              <div class="control-grid single-up">
+                <button data-action="redeploy">Redeploy Series</button>
+              </div>
+            </section>
+          </div>
+
+          <section class="skip-panel">
+            <div class="group-head">
+              <span class="group-label">Skip Target</span>
+              <p>Jump directly to a specific series.</p>
+            </div>
+            <div class="inline-form">
+              <label for="skipSeries">Series</label>
+              <input id="skipSeries" type="number" min="1" max="8" value="1" />
+              <button data-action="skip">Run</button>
+            </div>
+          </section>
+        </article>
+
+        <article class="panel">
+          <header class="panel-head">
+            <h2>Action Feed</h2>
+            <p>Most recent operator result.</p>
+          </header>
+          <pre id="actionLog" class="logbox">Ready.</pre>
+        </article>
+
+        <article class="panel">
+          <header class="panel-head">
+            <h2>Runtime Summary</h2>
+            <p>Live competition and scheduler state.</p>
+          </header>
+          <dl class="runtime-grid compact">
+            <div><dt>Status</dt><dd id="rtStatus">n/a</dd></div>
+            <div><dt>Current</dt><dd id="rtCurrent">n/a</dd></div>
+            <div><dt>Previous</dt><dd id="rtPrevious">n/a</dd></div>
+            <div><dt>Validated</dt><dd id="rtValidated">n/a</dd></div>
+            <div><dt>Validated At</dt><dd id="rtValidatedAt">n/a</dd></div>
+            <div><dt>Jobs</dt><dd id="rtJobs">n/a</dd></div>
+          </dl>
+          <div class="faultbox">
+            <span>Fault Reason</span>
+            <p id="faultReason">None</p>
+          </div>
+        </article>
+
+      </aside>
+
+      <section class="live-column">
+        <article class="panel">
+          <header class="panel-head">
+            <h2>Load Balancer</h2>
+            <p>Current listener pressure and backend distribution.</p>
+          </header>
+          <div class="lb-summary">
+            <div><span>Services</span><strong id="lbServices">0</strong></div>
+            <div><span>Inbound</span><strong id="lbInbound">0</strong></div>
+            <div><span>Backend</span><strong id="lbBackend">0</strong></div>
+          </div>
+          <div class="lb-layout">
+            <div class="subpanel">
+              <div class="subpanel-head">
+                <span class="group-label">Node Load</span>
+                <p>Aggregated backend connections per node.</p>
+              </div>
+              <div class="graph-wrap">
+                <canvas id="lbGraph" class="load-graph" aria-label="Node load graph"></canvas>
+              </div>
+              <div id="lbNodes" class="node-loads"></div>
+            </div>
+            <div class="subpanel">
+              <div class="subpanel-head">
+                <span class="group-label">Listener Detail</span>
+                <p>Per-service breakdown.</p>
+              </div>
+              <div class="table-wrap short">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Listener</th>
+                      <th>Port</th>
+                      <th>Inbound</th>
+                      <th>Backend</th>
+                      <th>Distribution</th>
+                    </tr>
+                  </thead>
+                  <tbody id="lbTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <p id="lbNote" class="hint"></p>
+        </article>
+
+        <article class="panel">
+          <header class="panel-head">
+            <h2>Container State</h2>
+            <p>Observed replicas from the latest poll cycle.</p>
+          </header>
+          <div class="table-wrap medium">
+            <table>
+              <thead>
+                <tr>
+                  <th>Node</th>
+                  <th>Variant</th>
+                  <th>Status</th>
+                  <th>Container</th>
+                  <th>King</th>
+                  <th>Series</th>
+                </tr>
+              </thead>
+              <tbody id="containersTable"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <aside class="intel-column">
+        <article class="panel">
+          <header class="panel-head">
+            <h2>Leaderboard</h2>
+            <p>Standings, penalties, and score pressure.</p>
+          </header>
+          <div class="table-wrap tall">
+            <table>
+              <thead>
+                <tr>
+                  <th>Team</th>
+                  <th>Status</th>
+                  <th>Offenses</th>
+                  <th>Points</th>
+                </tr>
+              </thead>
+              <tbody id="teamsTable"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel">
+          <header class="panel-head">
+            <h2>Events</h2>
+            <p>Recent lifecycle, scoring, and recovery history.</p>
+          </header>
+          <div class="table-wrap tall">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Severity</th>
+                  <th>Type</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody id="eventsTable"></tbody>
+            </table>
+          </div>
+        </article>
+      </aside>
     </section>
   </main>
 
   <script>
+    const apiKeyInput = document.getElementById('apiKey');
+    const savedApiKey = localStorage.getItem('refereeApiKey');
+    if (savedApiKey) {
+      apiKeyInput.value = savedApiKey;
+    }
+    apiKeyInput.addEventListener('input', () => {
+      localStorage.setItem('refereeApiKey', apiKeyInput.value);
+    });
+
     async function getJson(url) {
       const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
       return await res.json();
     }
 
-    async function post(url, body) {
-      await fetch(url, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      await refresh();
+    function apiHeaders() {
+      const headers = {'Content-Type': 'application/json'};
+      if (apiKeyInput.value.trim()) {
+        headers['X-API-Key'] = apiKeyInput.value.trim();
+      }
+      return headers;
     }
 
-    function renderStatus(status) {
-      const containers = status.containers.map(c =>
-        `<li>${c.machine_host} ${c.container_id} [${c.status}] king=${c.king ?? 'n/a'} mtime=${c.king_mtime_epoch ?? 'n/a'}</li>`
-      ).join('');
+    function logAction(message) {
+      const stamp = new Date().toLocaleTimeString();
+      const normalized = typeof message === 'string' ? message : JSON.stringify(message);
+      const compact = normalized.length > 500 ? `${normalized.slice(0, 500)}...` : normalized;
+      document.getElementById('actionLog').textContent = `[${stamp}] ${compact}`;
+    }
 
-      return `
-        <h2>Competition</h2>
-        <p>Status: <strong>${status.competition_status}</strong></p>
-        <p>Series: <strong>H${status.current_series}</strong></p>
-        <p>Next rotation (s): <strong>${status.next_rotation_seconds ?? 'n/a'}</strong></p>
-        <p>Active teams: <strong>${status.active_teams}</strong></p>
-        <ul>${containers}</ul>
-      `;
+    async function post(url, body) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: apiHeaders(),
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!res.ok) {
+        let detail = '';
+        try {
+          const payload = await res.json();
+          detail = payload.detail || JSON.stringify(payload);
+        } catch (_) {
+          detail = await res.text();
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+      const payload = await res.json().catch(() => ({ok: true}));
+      logAction(`${url} succeeded`);
+      await refresh();
+      return payload;
+    }
+
+    function formatSeries(series) {
+      return series && series > 0 ? `H${series}` : 'n/a';
+    }
+
+    function textOrFallback(value, fallback = 'n/a') {
+      return value === null || value === undefined || value === '' ? fallback : value;
+    }
+
+    function formatTimestamp(value) {
+      if (!value) {
+        return 'n/a';
+      }
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) {
+        return value;
+      }
+      return parsed.toLocaleString([], {
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      });
+    }
+
+    function setTone(element, tone) {
+      element.classList.remove('tone-ok', 'tone-warning', 'tone-critical');
+      if (tone) {
+        element.classList.add(`tone-${tone}`);
+      }
+    }
+
+    function toneForState(value) {
+      const normalized = String(value || '').toLowerCase();
+      if (!normalized) {
+        return '';
+      }
+      if ([
+        'ok',
+        'healthy',
+        'running',
+        'active',
+        'valid',
+        'clear',
+        'info',
+      ].includes(normalized)) {
+        return 'ok';
+      }
+      if ([
+        'warning',
+        'warned',
+        'paused',
+        'starting',
+        'stopping',
+        'rotating',
+        'degraded',
+      ].includes(normalized)) {
+        return 'warning';
+      }
+      if ([
+        'critical',
+        'failed',
+        'faulted',
+        'banned',
+        'invalid',
+      ].includes(normalized)) {
+        return 'critical';
+      }
+      return '';
+    }
+
+    function pillToneClass(value) {
+      const tone = toneForState(value);
+      return tone ? `tone-${tone}` : '';
+    }
+
+    function loadTone(value, peak) {
+      if (!peak || value <= 0) {
+        return '';
+      }
+      if (value >= peak) {
+        return 'critical';
+      }
+      if (value >= peak * 0.6) {
+        return 'warning';
+      }
+      return 'ok';
+    }
+
+    function drawLbGraph(entries) {
+      const canvas = document.getElementById('lbGraph');
+      const width = canvas.clientWidth || 320;
+      const height = canvas.clientHeight || 170;
+      const ratio = window.devicePixelRatio || 1;
+
+      canvas.width = Math.floor(width * ratio);
+      canvas.height = Math.floor(height * ratio);
+
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#050505';
+      ctx.fillRect(0, 0, width, height);
+
+      if (!entries.length) {
+        ctx.strokeStyle = '#1f1f1f';
+        ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+        ctx.fillStyle = '#7f7f7f';
+        ctx.font = '12px Inter, sans-serif';
+        ctx.fillText('No backend load', 12, 22);
+        return;
+      }
+
+      const maxValue = Math.max(...entries.map(([, value]) => value), 1);
+      const leftPad = 12;
+      const rightPad = 12;
+      const topPad = 14;
+      const bottomPad = 24;
+      const chartWidth = width - leftPad - rightPad;
+      const chartHeight = height - topPad - bottomPad;
+      const slotWidth = chartWidth / entries.length;
+      const barWidth = Math.max(18, slotWidth - 12);
+
+      ctx.strokeStyle = '#1f1f1f';
+      ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+      ctx.strokeStyle = '#181818';
+      for (let line = 1; line <= 3; line += 1) {
+        const y = topPad + (chartHeight / 4) * line;
+        ctx.beginPath();
+        ctx.moveTo(leftPad, y);
+        ctx.lineTo(width - rightPad, y);
+        ctx.stroke();
+      }
+
+      entries.forEach(([label, value], index) => {
+        const x = leftPad + slotWidth * index + (slotWidth - barWidth) / 2;
+        const barHeight = (value / maxValue) * (chartHeight - 6);
+        const y = topPad + chartHeight - barHeight;
+        const tone = loadTone(value, maxValue);
+
+        ctx.fillStyle =
+          tone === 'critical' ? '#b33a3a' :
+          tone === 'warning' ? '#b08a2b' :
+          tone === 'ok' ? '#2d8f52' :
+          '#ffffff';
+        ctx.fillRect(x, y, barWidth, barHeight);
+
+        ctx.fillStyle = '#f3f3f3';
+        ctx.font = '600 12px Inter, sans-serif';
+        ctx.fillText(String(value), x, Math.max(12, y - 4));
+
+        ctx.fillStyle = '#8d8d8d';
+        ctx.font = '11px Inter, sans-serif';
+        ctx.fillText(label.replace(/^.*@/, ''), x, height - 8);
+      });
+    }
+
+    function renderRuntime(status, runtime) {
+      const metricStatus = document.getElementById('metricStatus');
+      const metricSeries = document.getElementById('metricSeries');
+      const metricTeams = document.getElementById('metricTeams');
+      const metricContainers = document.getElementById('metricContainers');
+      const metricRotation = document.getElementById('metricRotation');
+      const metricFault = document.getElementById('metricFault');
+      const rtStatus = document.getElementById('rtStatus');
+      const rtCurrent = document.getElementById('rtCurrent');
+      const rtPrevious = document.getElementById('rtPrevious');
+      const rtValidated = document.getElementById('rtValidated');
+      const rtValidatedAt = document.getElementById('rtValidatedAt');
+      const rtJobs = document.getElementById('rtJobs');
+      const faultReason = document.getElementById('faultReason');
+
+      metricStatus.textContent = status.competition_status;
+      metricSeries.textContent = formatSeries(status.current_series);
+      metricTeams.textContent = status.active_teams;
+      metricContainers.textContent = status.containers.length;
+      metricRotation.textContent = textOrFallback(runtime.next_rotation_seconds, 'n/a');
+      metricFault.textContent = runtime.fault_reason ? 'faulted' : 'clear';
+
+      rtStatus.textContent = runtime.competition_status;
+      rtCurrent.textContent = formatSeries(runtime.current_series);
+      rtPrevious.textContent = formatSeries(runtime.previous_series);
+      rtValidated.textContent = formatSeries(runtime.last_validated_series);
+      rtValidatedAt.textContent = formatTimestamp(runtime.last_validated_at);
+      rtJobs.textContent = runtime.active_jobs.join(', ') || 'none';
+      faultReason.textContent = runtime.fault_reason || 'None';
+
+      setTone(metricStatus, toneForState(status.competition_status));
+      setTone(metricFault, runtime.fault_reason ? 'critical' : 'ok');
+      setTone(rtStatus, toneForState(runtime.competition_status));
+      setTone(rtValidated, runtime.last_validated_series ? 'ok' : '');
+      setTone(faultReason, runtime.fault_reason ? 'critical' : 'ok');
+    }
+
+    function renderTeams(teams) {
+      document.getElementById('teamsTable').innerHTML = teams
+        .slice(0, 25)
+        .map(team => `
+          <tr>
+            <td>${team.name}</td>
+            <td><span class="pill ${pillToneClass(team.status)}">${team.status}</span></td>
+            <td>${team.offense_count}</td>
+            <td>${team.total_points.toFixed(1)}</td>
+          </tr>
+        `)
+        .join('');
+    }
+
+    function renderContainers(containers) {
+      document.getElementById('containersTable').innerHTML = containers
+        .map(container => `
+          <tr>
+            <td>${container.machine_host}</td>
+            <td>${container.variant}</td>
+            <td><span class="pill ${pillToneClass(container.status)}">${container.status}</span></td>
+            <td class="mono">${container.container_id}</td>
+            <td>${textOrFallback(container.king)}</td>
+            <td>${formatSeries(container.series)}</td>
+          </tr>
+        `)
+        .join('');
+    }
+
+    function renderEvents(events) {
+      document.getElementById('eventsTable').innerHTML = events
+        .map(event => `
+          <tr>
+            <td class="mono">${new Date(event.timestamp).toLocaleString()}</td>
+            <td><span class="pill ${pillToneClass(event.severity)}">${event.severity}</span></td>
+            <td>${event.type}</td>
+            <td>${event.detail}</td>
+          </tr>
+        `)
+        .join('');
+    }
+
+    function renderLb(lb) {
+      document.getElementById('lbServices').textContent = lb.services.length;
+      document.getElementById('lbInbound').textContent = lb.total_inbound_connections;
+      document.getElementById('lbBackend').textContent = lb.total_backend_connections;
+      document.getElementById('lbNote').textContent = lb.note || '';
+
+      const nodeTotals = {};
+      lb.services.forEach(service => {
+        service.servers.forEach(server => {
+          nodeTotals[server.host] = (nodeTotals[server.host] || 0) + server.active_connections;
+        });
+      });
+
+      const nodeEntries = Object.entries(nodeTotals)
+        .sort((a, b) => b[1] - a[1])
+      const peakNodeLoad = nodeEntries.length ? nodeEntries[0][1] : 0;
+
+      document.getElementById('lbNodes').innerHTML = nodeEntries
+        .map(([host, count]) => `
+          <div class="node-card ${pillToneClass(loadTone(count, peakNodeLoad))}">
+            <span>${host}</span>
+            <strong>${count}</strong>
+          </div>
+        `)
+        .join('');
+
+      drawLbGraph(nodeEntries);
+
+      document.getElementById('lbTable').innerHTML = lb.services
+        .sort((a, b) => b.backend_connections - a.backend_connections || a.bind_port - b.bind_port)
+        .map(service => `
+          <tr>
+            <td>${service.name}</td>
+            <td>${service.bind_port}</td>
+            <td>${service.inbound_connections}</td>
+            <td>${service.backend_connections}</td>
+            <td class="distribution">
+              ${service.servers.map(server => `
+                <div class="dist-row">
+                  <span class="mono">${server.name}</span>
+                  <span>${server.host}:${server.port}</span>
+                  <strong>${server.active_connections}</strong>
+                </div>
+              `).join('')}
+            </td>
+          </tr>
+        `)
+        .join('');
+    }
+
+    async function runAction(action) {
+      try {
+        switch (action) {
+          case 'start':
+            await post('/api/competition/start');
+            break;
+          case 'stop':
+            await post('/api/competition/stop');
+            break;
+          case 'pause':
+            await post('/api/pause');
+            break;
+          case 'resume':
+            await post('/api/resume');
+            break;
+          case 'rotate':
+            await post('/api/rotate');
+            break;
+          case 'restart':
+            await post('/api/rotate/restart');
+            break;
+          case 'poll':
+            await post('/api/poll');
+            break;
+          case 'validate': {
+            const payload = await post('/api/recover/validate');
+            logAction(
+              `validate: valid=${payload.valid} healthy_nodes=${payload.healthy_nodes}/${payload.min_healthy_nodes} issues=${payload.issues.length}`
+            );
+            break;
+          }
+          case 'redeploy': {
+            const payload = await post('/api/recover/redeploy');
+            logAction(
+              `redeploy: ok=${payload.ok} status=${payload.competition_status} detail=${payload.detail}`
+            );
+            break;
+          }
+          case 'skip': {
+            const targetSeries = Number(document.getElementById('skipSeries').value || '1');
+            await post('/api/rotate/skip', {target_series: targetSeries});
+            break;
+          }
+          default:
+            break;
+        }
+      } catch (error) {
+        logAction(`error: ${error.message}`);
+      }
     }
 
     async function refresh() {
-      const [status, teams, events] = await Promise.all([
-        getJson('/api/status'),
-        getJson('/api/teams'),
-        getJson('/api/events?limit=25'),
-      ]);
-
-      document.getElementById('statusPanel').innerHTML = renderStatus(status);
-      document.getElementById('teamsList').innerHTML = teams
-        .slice(0, 20)
-        .map(t => `<li>${t.name} - ${t.total_points.toFixed(1)} (${t.status})</li>`)
-        .join('');
-
-      document.getElementById('eventsList').innerHTML = events
-        .map(e => `<li>${e.timestamp} ${e.type} ${e.detail}</li>`)
-        .join('');
+      try {
+        const [status, runtime, teams, events, lb] = await Promise.all([
+          getJson('/api/status'),
+          getJson('/api/runtime'),
+          getJson('/api/teams'),
+          getJson('/api/events?limit=40'),
+          getJson('/api/lb'),
+        ]);
+        renderRuntime(status, runtime);
+        renderTeams(teams);
+        renderContainers(status.containers);
+        renderEvents(events);
+        renderLb(lb);
+      } catch (error) {
+        logAction(`refresh failed: ${error.message}`);
+      }
     }
+
+    document.querySelectorAll('[data-action]').forEach(button => {
+      button.addEventListener('click', () => runAction(button.dataset.action));
+    });
 
     setInterval(refresh, 5000);
     refresh();

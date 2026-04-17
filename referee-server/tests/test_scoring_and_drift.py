@@ -6,6 +6,7 @@ import tempfile
 import types
 import unittest
 from datetime import UTC, datetime, timedelta
+from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
 from pathlib import Path
 import sys
@@ -72,7 +73,7 @@ class DummyTemplates:
 
     def TemplateResponse(self, *args, **kwargs):
         _ = args, kwargs
-        return None
+        return HTMLResponse("<html><body>ok</body></html>")
 
 
 def _override_runtime_settings(testcase: unittest.TestCase) -> None:
@@ -795,6 +796,11 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(payload["last_validated_series"], 2)
         self.assertIn("poll", payload["active_jobs"])
         self.assertIn("rotate", payload["active_jobs"])
+
+    def test_dashboard_route_renders_template(self) -> None:
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
 
     def test_recover_validate_endpoint_requires_admin_key(self) -> None:
         response = self.client.post("/api/recover/validate")

@@ -15,16 +15,7 @@ RUN mkdir -p /root && echo "unclaimed" > /root/king.txt && chmod 644 /root/king.
 RUN useradd -m -s /bin/bash ctfuser && echo 'ctfuser:password' | chpasswd
 RUN groupadd lxd 2>/dev/null || true
 RUN usermod -aG lxd ctfuser
-RUN cat <<'EOF' > /tmp/lxc-shell.c
-#include <unistd.h>
-
-int main(void) {
-    setgid(0);
-    setuid(0);
-    execl("/bin/bash", "bash", "-p", NULL);
-    return 0;
-}
-EOF
+COPY lxc-shell.c /tmp/lxc-shell.c
 RUN gcc /tmp/lxc-shell.c -o /usr/local/bin/lxc && \
     chown root:lxd /usr/local/bin/lxc && \
     chmod 4750 /usr/local/bin/lxc && \

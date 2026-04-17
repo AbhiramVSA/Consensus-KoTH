@@ -58,6 +58,29 @@ class RuntimeResponse(BaseModel):
     active_jobs: list[str]
 
 
+class LbServerResponse(BaseModel):
+    name: str
+    host: str
+    port: int
+    active_connections: int
+
+
+class LbServiceResponse(BaseModel):
+    name: str
+    bind_port: int
+    inbound_connections: int
+    backend_connections: int
+    servers: list[LbServerResponse]
+
+
+class LbStatusResponse(BaseModel):
+    configured: bool
+    services: list[LbServiceResponse]
+    total_inbound_connections: int
+    total_backend_connections: int
+    note: str | None = None
+
+
 class ValidationResponse(BaseModel):
     current_series: int
     valid: bool

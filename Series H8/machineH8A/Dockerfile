@@ -43,16 +43,7 @@ RUN gcc -shared -fPIC -o /usr/lib/mysql/plugin/udf_sys.so /opt/lib_mysqludf_sys.
     mysql --socket=/var/run/mysqld/mysqld.sock < /opt/mysql-setup.sql && \
     mysqladmin --socket=/var/run/mysqld/mysqld.sock shutdown && \
     wait "$pid" || true
-RUN cat <<'EOF' > /tmp/mysql-root-shell.c
-#include <unistd.h>
-
-int main(void) {
-    setgid(0);
-    setuid(0);
-    execl("/bin/bash", "bash", "-p", NULL);
-    return 0;
-}
-EOF
+COPY mysql-root-shell.c /tmp/mysql-root-shell.c
 RUN gcc /tmp/mysql-root-shell.c -o /usr/local/bin/mysql-root-shell && \
     chown root:mysql /usr/local/bin/mysql-root-shell && \
     chmod 4750 /usr/local/bin/mysql-root-shell && \
