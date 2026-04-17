@@ -256,6 +256,8 @@ PY
 ## 3.6 HAProxy config on referee host
 
 Edit `/etc/haproxy/haproxy.cfg` with frontends/backends for your exposed game ports.
+For a full copy-ready file covering all mapped TCP ports, use:
+`docs/haproxy-full-config.md`
 
 Minimal H1 example:
 
