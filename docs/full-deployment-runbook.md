@@ -457,6 +457,23 @@ Stop:
 curl -sS -X POST "$REFEREE_URL/api/competition/stop" -H "X-API-Key: $API_KEY"
 ```
 
+Important:
+
+1. `POST /api/competition/stop` stops the live competition only. It tears down the active series, posts final scores, and leaves the referee API/service running.
+2. It does **not** stop the FastAPI process or the `koth-referee` systemd unit.
+3. To stop the actual referee daemon on the referee/LB host, use:
+
+```bash
+sudo systemctl stop koth-referee
+sudo systemctl status koth-referee
+```
+
+If the service does not stop cleanly, inspect:
+
+```bash
+sudo journalctl -u koth-referee -n 100 --no-pager
+```
+
 ## 5) Final Pre-Go-Live Order
 
 1. Validate `node1` using `validate_koth_node.sh`

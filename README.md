@@ -47,6 +47,7 @@
 - Competition startup requires a non-empty team roster. Keep an existing `referee.db` team table or configure `BACKEND_URL` to return `/teams`.
 - Runtime lifecycle states are explicit: `starting`, `running`, `paused`, `rotating`, `faulted`, `stopping`, `stopped`.
 - `paused` means intentionally halted and resumable after validation. `faulted` means unsafe state; use recovery APIs before resuming.
+- `POST /api/competition/stop` stops the competition, not the referee daemon. To stop the actual service, use `sudo systemctl stop koth-referee` on the referee host.
 - Start command:
 
 ```bash
