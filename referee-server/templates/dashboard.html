@@ -141,10 +141,10 @@
 
       <section class="content-shell">
         <nav class="tabs" aria-label="Dashboard sections">
-          <button class="tab-button is-active" data-tab-target="operationsTab">Operations</button>
-          <button class="tab-button" data-tab-target="routingTab">Routing</button>
-          <button class="tab-button" data-tab-target="healthTab">Health</button>
-          <button class="tab-button" data-tab-target="logsTab">Logs</button>
+          <button type="button" class="tab-button is-active" data-tab-target="operationsTab">Operations</button>
+          <button type="button" class="tab-button" data-tab-target="routingTab">Routing</button>
+          <button type="button" class="tab-button" data-tab-target="healthTab">Health</button>
+          <button type="button" class="tab-button" data-tab-target="logsTab">Logs</button>
         </nav>
 
         <section class="tab-panels">
@@ -378,6 +378,21 @@
       const normalized = typeof message === 'string' ? message : JSON.stringify(message);
       const compact = normalized.length > 500 ? `${normalized.slice(0, 500)}...` : normalized;
       document.getElementById('actionLog').textContent = `[${stamp}] ${compact}`;
+    }
+
+    function activateTab(target) {
+      const normalized = String(target || '').replace(/^#/, '');
+      const fallback = 'operationsTab';
+      const targetId = document.getElementById(normalized) ? normalized : fallback;
+      document.querySelectorAll('.tab-button').forEach(button => {
+        button.classList.toggle('is-active', button.dataset.tabTarget === targetId);
+      });
+      document.querySelectorAll('.tab-panel').forEach(panel => {
+        panel.classList.toggle('is-active', panel.id === targetId);
+      });
+      if (window.location.hash !== `#${targetId}`) {
+        history.replaceState(null, '', `#${targetId}`);
+      }
     }
 
     async function post(url, body) {
@@ -942,15 +957,15 @@
       }
       manageTeam(button.dataset.teamAction, button.dataset.teamName);
     });
-    document.querySelectorAll('[data-tab-target]').forEach(button => {
-      button.addEventListener('click', () => {
-        const target = button.dataset.tabTarget;
-        document.querySelectorAll('.tab-button').forEach(item => item.classList.remove('is-active'));
-        document.querySelectorAll('.tab-panel').forEach(item => item.classList.remove('is-active'));
-        button.classList.add('is-active');
-        document.getElementById(target)?.classList.add('is-active');
-      });
+    document.querySelector('.tabs').addEventListener('click', event => {
+      const button = event.target.closest('[data-tab-target]');
+      if (!button) {
+        return;
+      }
+      activateTab(button.dataset.tabTarget);
     });
+    window.addEventListener('hashchange', () => activateTab(window.location.hash));
+    activateTab(window.location.hash || 'operationsTab');
 
     setInterval(refresh, 5000);
     refresh();

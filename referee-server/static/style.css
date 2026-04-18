@@ -711,6 +711,8 @@ tbody tr:last-child td {
 }
 
 .tabs {
+  position: relative;
+  z-index: 2;
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
@@ -718,6 +720,7 @@ tbody tr:last-child td {
 }
 
 .tab-button {
+  position: relative;
   min-height: 40px;
   padding: 10px 16px;
   border-color: var(--line);
