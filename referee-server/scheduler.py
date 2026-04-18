@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from datetime import UTC, datetime, timedelta
+import json
 import logging
 from pathlib import Path
 import re
@@ -1418,7 +1419,9 @@ class RefereeRuntime:
 
             # Escalate once per team per cycle.
             snapshot_map = {(s.node_host, s.variant): s for s in snapshots}
-            teams_to_escalate: set[str] = set()
+            existing_active_violations = self.db.get_active_violation_keys(series=series)
+            current_active_violations: set[tuple[str, str, str, int, str, str]] = set()
+            new_active_violations: list[tuple[str, str, str, int, str, str, Any]] = []
             for key, hits in violations.items():
                 if not hits:
                     continue
@@ -1428,10 +1431,22 @@ class RefereeRuntime:
                 if snap.king.lower() == "unclaimed":
                     continue
                 if self.db.team_exists(snap.king):
-                    teams_to_escalate.add(snap.king)
+                    for hit in hits:
+                        evidence_sig = json.dumps(hit.evidence, sort_keys=True, separators=(",", ":"))
+                        entry = (
+                            snap.king,
+                            snap.node_host,
+                            snap.variant,
+                            series,
+                            hit.offense_name,
+                            evidence_sig,
+                        )
+                        current_active_violations.add(entry)
+                        if entry not in existing_active_violations:
+                            new_active_violations.append((*entry, hit))
 
             team_actions: dict[str, str] = {}
-            for team in teams_to_escalate:
+            for team in sorted({entry[0] for entry in new_active_violations}):
                 result = self.enforcer.escalate_team(team)
                 team_actions[team] = result.action
                 self._log_event_and_webhook(
@@ -1443,36 +1458,34 @@ class RefereeRuntime:
                     evidence={"offense_count": result.offense_count},
                 )
 
-            for (node_host, variant), hits in violations.items():
-                snap = snapshot_map.get((node_host, variant))
-                if snap is None or not snap.king:
-                    continue
-                team = snap.king
-                if not self.db.team_exists(team):
-                    continue
+            for team, node_host, variant, _, _, _, hit in new_active_violations:
                 action = team_actions.get(team, "warning")
-                for hit in hits:
-                    log_structured(
-                        logger,
-                        logging.WARNING,
-                        "violation_detected",
-                        poll_cycle=poll_cycle,
-                        team_name=team,
-                        machine=node_host,
-                        variant=variant,
-                        series=series,
-                        offense_id=hit.offense_id,
-                        offense_name=hit.offense_name,
-                        evidence=hit.evidence,
-                        action=action,
-                    )
-                    self.enforcer.record_violation(
-                        team_name=team,
-                        machine=node_host,
-                        variant=variant,
-                        series=series,
-                        offense_id=hit.offense_id,
-                        offense_name=hit.offense_name,
-                        evidence=hit.evidence,
-                        action=action,
-                    )
+                log_structured(
+                    logger,
+                    logging.WARNING,
+                    "violation_detected",
+                    poll_cycle=poll_cycle,
+                    team_name=team,
+                    machine=node_host,
+                    variant=variant,
+                    series=series,
+                    offense_id=hit.offense_id,
+                    offense_name=hit.offense_name,
+                    evidence=hit.evidence,
+                    action=action,
+                )
+                self.enforcer.record_violation(
+                    team_name=team,
+                    machine=node_host,
+                    variant=variant,
+                    series=series,
+                    offense_id=hit.offense_id,
+                    offense_name=hit.offense_name,
+                    evidence=hit.evidence,
+                    action=action,
+                )
+
+            self.db.replace_active_violations(
+                series=series,
+                entries=current_active_violations,
+            )

@@ -399,6 +399,9 @@
       return document.querySelector('.tab-button.is-active')?.dataset.tabTarget || 'operationsTab';
     }
 
+    let refreshPromise = null;
+    let refreshPending = false;
+
     async function post(url, body) {
       const res = await fetch(url, {
         method: 'POST',
@@ -910,44 +913,57 @@
     }
 
     async function refresh() {
-      try {
-        if (!apiKeyInput.value.trim()) {
-          logAction('enter the admin API key to load runtime data');
-          return;
-        }
-        const [status, runtime, teams, events] = await Promise.all([
-          getJson('/api/status'),
-          getJson('/api/runtime'),
-          getJson('/api/teams'),
-          getJson('/api/events?limit=40'),
-        ]);
-        renderRuntime(status, runtime);
-        renderTeams(teams);
-        renderContainers(status.containers);
-        renderEvents(events);
-        renderEventBrief(status, runtime, teams);
-
-        const tab = activeTabId();
-        if (tab === 'routingTab') {
-          const routing = await getJson('/api/routing');
-          renderRouting(routing);
-        } else if (tab === 'healthTab') {
-          const telemetry = await getJson('/api/telemetry');
-          renderTelemetry(telemetry);
-        } else if (tab === 'logsTab') {
-          const [claims, refereeLog, haproxyLog] = await Promise.all([
-            getJson('/api/claims?limit=30'),
-            getJson('/api/logs/referee?lines=60'),
-            getJson('/api/logs/haproxy?lines=60'),
-          ]);
-          renderClaims(claims);
-          renderLogsBrief(events, claims);
-          renderLogBox('refereeLog', refereeLog);
-          renderLogBox('haproxyLog', haproxyLog);
-        }
-      } catch (error) {
-        logAction(`refresh failed: ${error.message}`);
+      if (refreshPromise) {
+        refreshPending = true;
+        return refreshPromise;
       }
+      refreshPromise = (async () => {
+        try {
+          if (!apiKeyInput.value.trim()) {
+            logAction('enter the admin API key to load runtime data');
+            return;
+          }
+          const [status, runtime, teams, events] = await Promise.all([
+            getJson('/api/status'),
+            getJson('/api/runtime'),
+            getJson('/api/teams'),
+            getJson('/api/events?limit=40'),
+          ]);
+          renderRuntime(status, runtime);
+          renderTeams(teams);
+          renderContainers(status.containers);
+          renderEvents(events);
+          renderEventBrief(status, runtime, teams);
+
+          const tab = activeTabId();
+          if (tab === 'routingTab') {
+            const routing = await getJson('/api/routing');
+            renderRouting(routing);
+          } else if (tab === 'healthTab') {
+            const telemetry = await getJson('/api/telemetry');
+            renderTelemetry(telemetry);
+          } else if (tab === 'logsTab') {
+            const [claims, refereeLog, haproxyLog] = await Promise.all([
+              getJson('/api/claims?limit=30'),
+              getJson('/api/logs/referee?lines=60'),
+              getJson('/api/logs/haproxy?lines=60'),
+            ]);
+            renderClaims(claims);
+            renderLogsBrief(events, claims);
+            renderLogBox('refereeLog', refereeLog);
+            renderLogBox('haproxyLog', haproxyLog);
+          }
+        } catch (error) {
+          logAction(`refresh failed: ${error.message}`);
+        } finally {
+          refreshPromise = null;
+          if (refreshPending) {
+            refreshPending = false;
+            void refresh();
+          }
+        }
+      })();
+      return refreshPromise;
     }
 
     async function createTeam() {

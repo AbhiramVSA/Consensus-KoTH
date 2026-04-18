@@ -580,6 +580,83 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertEqual(team["offense_count"], 0)
         self.assertEqual(team["status"], "active")
 
+    def test_repeated_violation_only_escalates_once_until_cleared(self) -> None:
+        runtime, db = self.make_runtime()
+        db.upsert_team_names(["Team Alpha"])
+        db.set_competition_state(status="running", current_series=2)
+        baseline_ports = "\n".join(
+            [
+                "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process",
+                "LISTEN 0 128 *:8080 *:* users:((\"java\",pid=1,fd=123))",
+            ]
+        )
+        violating_ports = "\n".join(
+            [
+                "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process",
+                "LISTEN 0 128 *:8080 *:* users:((\"java\",pid=1,fd=123))",
+                "LISTEN 0 128 127.0.0.1:9005 *:* users:((\"java\",pid=1,fd=124))",
+            ]
+        )
+
+        baseline = [
+            VariantSnapshot(
+                node_host=node_host,
+                variant=variant,
+                king="unclaimed",
+                king_mtime_epoch=1000,
+                status="running",
+                sections={"AUTHKEYS": "", "SHADOW": "", "IPTABLES": "ok", "PORTS": baseline_ports, "ROOT_DIR": "700", "KING_STAT": "1000 644 root:root regular file", "KING": "unclaimed", "NODE_EPOCH": "1000"},
+                checked_at=datetime.now(UTC),
+            )
+            for node_host in SETTINGS.node_hosts
+            for variant in SETTINGS.variants
+        ]
+        runtime._capture_baselines(2, baseline)
+
+        violating = [
+            VariantSnapshot(
+                node_host=node_host,
+                variant=variant,
+                king="Team Alpha" if variant == "C" and node_host == "192.168.0.103" else "unclaimed",
+                king_mtime_epoch=1000,
+                status="running",
+                sections={"AUTHKEYS": "", "SHADOW": "", "IPTABLES": "ok", "PORTS": violating_ports if variant == "C" and node_host == "192.168.0.103" else baseline_ports, "ROOT_DIR": "700", "KING_STAT": "1000 644 root:root regular file", "KING": "Team Alpha" if variant == "C" and node_host == "192.168.0.103" else "unclaimed", "NODE_EPOCH": "1000"},
+                checked_at=datetime.now(UTC),
+            )
+            for node_host in SETTINGS.node_hosts
+            for variant in SETTINGS.variants
+        ]
+        clean = [
+            VariantSnapshot(
+                node_host=node_host,
+                variant=variant,
+                king="unclaimed",
+                king_mtime_epoch=1000,
+                status="running",
+                sections={"AUTHKEYS": "", "SHADOW": "", "IPTABLES": "ok", "PORTS": baseline_ports, "ROOT_DIR": "700", "KING_STAT": "1000 644 root:root regular file", "KING": "unclaimed", "NODE_EPOCH": "1000"},
+                checked_at=datetime.now(UTC),
+            )
+            for node_host in SETTINGS.node_hosts
+            for variant in SETTINGS.variants
+        ]
+
+        runtime.poller.run_cycle = Mock(side_effect=[(violating, {}), (violating, {}), (clean, {}), (violating, {})])
+
+        runtime.poll_once()
+        self.assertEqual(db.get_team("Team Alpha")["offense_count"], 1)
+        self.assertEqual(len(db.list_violations()), 1)
+
+        runtime.poll_once()
+        self.assertEqual(db.get_team("Team Alpha")["offense_count"], 1)
+        self.assertEqual(len(db.list_violations()), 1)
+
+        runtime.poll_once()
+        self.assertEqual(db.get_team("Team Alpha")["offense_count"], 1)
+
+        runtime.poll_once()
+        self.assertEqual(db.get_team("Team Alpha")["offense_count"], 2)
+        self.assertEqual(len(db.list_violations()), 2)
+
     def test_pause_blocks_scoring(self) -> None:
         runtime, db = self.make_runtime()
         db.upsert_team_names(["Team Alpha"])

@@ -118,6 +118,18 @@ class Database:
                     selection_reason TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS active_violations (
+                    team_name TEXT NOT NULL,
+                    machine TEXT NOT NULL,
+                    variant TEXT NOT NULL,
+                    series INTEGER NOT NULL,
+                    offense_name TEXT NOT NULL,
+                    evidence_sig TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    PRIMARY KEY (team_name, machine, variant, series, offense_name, evidence_sig)
+                );
+
                 CREATE TABLE IF NOT EXISTS competition (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     status TEXT NOT NULL DEFAULT 'stopped',
@@ -197,6 +209,48 @@ class Database:
                     ON CONFLICT(name) DO NOTHING
                     """,
                     (name, now),
+                )
+
+    def get_active_violation_keys(self, *, series: int) -> set[tuple[str, str, str, int, str, str]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT team_name, machine, variant, series, offense_name, evidence_sig
+                FROM active_violations
+                WHERE series=?
+                """,
+                (series,),
+            ).fetchall()
+        return {
+            (
+                str(row["team_name"]),
+                str(row["machine"]),
+                str(row["variant"]),
+                int(row["series"]),
+                str(row["offense_name"]),
+                str(row["evidence_sig"]),
+            )
+            for row in rows
+        }
+
+    def replace_active_violations(
+        self,
+        *,
+        series: int,
+        entries: set[tuple[str, str, str, int, str, str]],
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self.tx() as conn:
+            conn.execute("DELETE FROM active_violations WHERE series=?", (series,))
+            for team_name, machine, variant, row_series, offense_name, evidence_sig in entries:
+                conn.execute(
+                    """
+                    INSERT INTO active_violations (
+                        team_name, machine, variant, series, offense_name, evidence_sig, first_seen_at, last_seen_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (team_name, machine, variant, row_series, offense_name, evidence_sig, now, now),
                 )
 
     def create_team(self, name: str) -> dict[str, Any]:
@@ -422,6 +476,20 @@ class Database:
                     now,
                 ),
             )
+
+    def list_violations(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        query = """
+            SELECT team_name, machine, variant, series, offense_id, offense_name, evidence, action_taken, timestamp
+            FROM violations
+            ORDER BY id ASC
+        """
+        params: tuple[Any, ...] = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (limit,)
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
 
     def increment_team_offense(self, team_name: str) -> tuple[int, str]:
         with self.tx() as conn:
