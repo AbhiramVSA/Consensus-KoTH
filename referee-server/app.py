@@ -484,6 +484,14 @@ def _series_variant_ports(series: int) -> dict[int, str]:
     return {port: variants[index] for index, port in enumerate(ports[: len(variants)])}
 
 
+def _compose_service_name(series: int, variant: str) -> str:
+    return SETTINGS.container_name_template.format(
+        series=series,
+        variant=variant,
+        variant_lower=variant.lower(),
+    )
+
+
 def _routing_status() -> RoutingStatusResponse:
     competition = db.get_competition()
     current_series = int(competition["current_series"])
@@ -711,7 +719,10 @@ def _remote_host_telemetry(
         metrics = json.loads(metrics_out or "{}")
     except json.JSONDecodeError:
         metrics = {}
-    container_names = [str(item["container_id"]) for item in containers]
+    container_names = [
+        _compose_service_name(int(item["series"]), str(item["variant"]))
+        for item in containers
+    ]
     stats_index: dict[str, dict] = {}
     inspect_index: dict[str, dict] = {}
 
@@ -749,9 +760,9 @@ def _remote_host_telemetry(
 
     telemetry: list[ContainerTelemetryResponse] = []
     for item in containers:
-        name = str(item["container_id"])
-        stats = stats_index.get(name, {})
-        inspect = inspect_index.get(name, {})
+        query_name = _compose_service_name(int(item["series"]), str(item["variant"]))
+        stats = stats_index.get(query_name, {})
+        inspect = inspect_index.get(query_name, {})
         state = inspect.get("State", {})
         started_at_raw = state.get("StartedAt")
         finished_at_raw = state.get("FinishedAt")
@@ -762,7 +773,7 @@ def _remote_host_telemetry(
             ContainerTelemetryResponse(
                 machine_host=host,
                 variant=str(item["variant"]),
-                container_id=name,
+                container_id=query_name,
                 series=int(item["series"]),
                 status=str(status),
                 health=((state.get("Health") or {}).get("Status")),
