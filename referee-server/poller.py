@@ -79,7 +79,7 @@ docker exec -u 0 "$container_id" sh -lc '
   echo "===IPTABLES===";
   iptables -L -n 2>/dev/null;
   echo "===PORTS===";
-  ss -tlnp 2>/dev/null;
+  ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || {{ cat /proc/net/tcp 2>/dev/null; cat /proc/net/tcp6 2>/dev/null; }};
   echo "===SHADOW===";
   sha256sum /etc/shadow 2>/dev/null;
   echo "===AUTHKEYS===";
@@ -301,6 +301,13 @@ fi;
 
         normalized_entries: list[str] = []
         for line in lines:
+            proc_entry = cls._parse_proc_net_listener(line)
+            if proc_entry is not None:
+                host, port = proc_entry
+                if host in {"127.0.0.11", "127.0.0.1", "::1", "localhost"}:
+                    continue
+                normalized_entries.append(f"{host}:{port}")
+                continue
             if line.lower().startswith("state "):
                 continue
             parts = re.split(r"\s+", line)
@@ -313,7 +320,7 @@ fi;
             host = host.strip("[]")
             if host == "::ffff:127.0.0.1":
                 host = "127.0.0.1"
-            if host == "127.0.0.11":
+            if host in {"127.0.0.11", "127.0.0.1", "::1", "localhost"}:
                 continue
             normalized_entries.append(f"{host}:{port}")
 
@@ -322,6 +329,42 @@ fi;
         normalized = "\n".join(sorted(set(normalized_entries)))
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
+    @classmethod
+    def _parse_proc_net_listener(cls, line: str) -> tuple[str, str] | None:
+        parts = re.split(r"\s+", line.strip())
+        if len(parts) < 4 or not parts[0].rstrip(":").isdigit():
+            return None
+        local = parts[1]
+        state = parts[3].upper()
+        if ":" not in local or state != "0A":
+            return None
+        host_hex, port_hex = local.split(":", 1)
+        host = cls._decode_proc_net_host(host_hex)
+        if host is None:
+            return None
+        try:
+            port = str(int(port_hex, 16))
+        except ValueError:
+            return None
+        return host, port
+
+    @staticmethod
+    def _decode_proc_net_host(host_hex: str) -> str | None:
+        host_hex = host_hex.strip().lower()
+        if not host_hex:
+            return None
+        if len(host_hex) == 8:
+            try:
+                octets = bytes.fromhex(host_hex)
+            except ValueError:
+                return None
+            return ".".join(str(part) for part in octets[::-1])
+        if len(host_hex) == 32:
+            if host_hex == "0" * 32:
+                return "::"
+            if host_hex.endswith("00000000000000000000ffff0100007f"):
+                return "127.0.0.1"
+        return None
     def run_cycle(
         self,
         *,

@@ -10,9 +10,15 @@ chmod 777 /srv/nfs/share
 mountpoint -q /proc/fs/nfsd || mount -t nfsd nfsd /proc/fs/nfsd
 mountpoint -q /var/lib/nfs/rpc_pipefs || mount -t rpc_pipefs sunrpc /var/lib/nfs/rpc_pipefs
 
+# Pin the NFS helper daemons to fixed ports so the referee's service-port
+# baseline stays stable across clean restarts and safe captures.
+echo 32765 >/proc/sys/fs/nfs/nlm_tcpport || true
+echo 32765 >/proc/sys/fs/nfs/nlm_udpport || true
+
 rpcbind -w
 exportfs -ra
-rpc.mountd --foreground --no-udp --manage-gids &
+rpc.statd --no-notify --port 32766 --outgoing-port 32767 &
+rpc.mountd --foreground --no-udp --manage-gids --port 32768 &
 rpc.nfsd --no-udp --nfs-version 4 8
 
 # Start distccd - listen on all interfaces, no whitelist (vulnerable)

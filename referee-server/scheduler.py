@@ -1068,6 +1068,28 @@ class RefereeRuntime:
                 deploy_results=up_results,
             )
             if not issues:
+                time.sleep(SETTINGS.deploy_health_poll_seconds)
+                settled_snaps, _ = self.poller.run_cycle(series=series)
+                self._mark_clock_drift_degraded(series=series, snapshots=settled_snaps)
+                self._apply_container_updates(series, settled_snaps)
+                settled_issues = self._evaluate_series_health(
+                    series=series,
+                    snapshots=settled_snaps,
+                    deploy_results=up_results,
+                )
+                if settled_issues:
+                    issues = [f"post-settle {issue}" for issue in settled_issues]
+                    if time.monotonic() >= deadline:
+                        break
+                    log_structured(
+                        logger,
+                        logging.WARNING,
+                        "deploy_health_retry",
+                        series=series,
+                        attempt=attempt,
+                        issues=issues,
+                    )
+                    continue
                 if attempt > 1:
                     log_structured(
                         logger,
@@ -1076,8 +1098,8 @@ class RefereeRuntime:
                         series=series,
                         attempts=attempt,
                     )
-                self._capture_baselines(series=series, snapshots=baseline_snaps)
-                return baseline_snaps
+                self._capture_baselines(series=series, snapshots=settled_snaps)
+                return settled_snaps
             if time.monotonic() >= deadline:
                 break
             log_structured(
@@ -1237,6 +1259,34 @@ class RefereeRuntime:
                 for hit in hits:
                     if hit.offense_name not in exempted:
                         bucket.append(hit)
+
+    def _team_for_violation(
+        self,
+        *,
+        snap: VariantSnapshot,
+        current_owners: dict[str, dict[str, Any]],
+        by_variant: dict[str, list[VariantSnapshot]],
+    ) -> str | None:
+        if snap.king and snap.king.lower() != "unclaimed" and self.db.team_exists(snap.king):
+            return snap.king
+
+        owner = current_owners.get(snap.variant)
+        if owner:
+            owner_team = str(owner.get("owner_team") or "").strip()
+            if owner_team and self.db.team_exists(owner_team):
+                return owner_team
+
+        candidates = {
+            entry.king
+            for entry in by_variant.get(snap.variant, [])
+            if entry.status == "running"
+            and entry.king
+            and entry.king.lower() != "unclaimed"
+            and self.db.team_exists(entry.king)
+        }
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        return None
 
     def poll_once(self) -> None:
         with self._lock:
@@ -1426,24 +1476,28 @@ class RefereeRuntime:
                 if not hits:
                     continue
                 snap = snapshot_map.get(key)
-                if snap is None or not snap.king:
+                if snap is None:
                     continue
-                if snap.king.lower() == "unclaimed":
+                team_name = self._team_for_violation(
+                    snap=snap,
+                    current_owners=current_owners,
+                    by_variant=by_variant,
+                )
+                if not team_name:
                     continue
-                if self.db.team_exists(snap.king):
-                    for hit in hits:
-                        evidence_sig = json.dumps(hit.evidence, sort_keys=True, separators=(",", ":"))
-                        entry = (
-                            snap.king,
-                            snap.node_host,
-                            snap.variant,
-                            series,
-                            hit.offense_name,
-                            evidence_sig,
-                        )
-                        current_active_violations.add(entry)
-                        if entry not in existing_active_violations:
-                            new_active_violations.append((*entry, hit))
+                for hit in hits:
+                    evidence_sig = json.dumps(hit.evidence, sort_keys=True, separators=(",", ":"))
+                    entry = (
+                        team_name,
+                        snap.node_host,
+                        snap.variant,
+                        series,
+                        hit.offense_name,
+                        evidence_sig,
+                    )
+                    current_active_violations.add(entry)
+                    if entry not in existing_active_violations:
+                        new_active_violations.append((*entry, hit))
 
             team_actions: dict[str, str] = {}
             for team in sorted({entry[0] for entry in new_active_violations}):

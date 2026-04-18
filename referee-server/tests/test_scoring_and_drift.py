@@ -24,6 +24,7 @@ if "paramiko" not in sys.modules:
 
 from poller import VariantSnapshot
 from poller import Poller
+from poller import ViolationHit
 from scheduler import RefereeRuntime, RuntimeGuardError
 from scorer import resolve_earliest_winners
 from db import Database
@@ -343,7 +344,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             _snapshot(node_host="192.168.0.106", variant="B", king="unclaimed"),
             _snapshot(node_host="192.168.0.106", variant="C", king="unclaimed"),
         ]
-        runtime.poller.run_cycle = Mock(side_effect=[([], {}), (healthy_snapshots, {})])
+        runtime.poller.run_cycle = Mock(side_effect=[([], {}), (healthy_snapshots, {}), (healthy_snapshots, {})])
 
         with patch("scheduler.fire_and_forget", lambda payload: None), patch(
             "scheduler.time.sleep",
@@ -420,14 +421,14 @@ class RuntimeSafetyTests(unittest.TestCase):
             _snapshot(node_host="192.168.0.106", variant="B", king="unclaimed"),
             _snapshot(node_host="192.168.0.106", variant="C", king="unclaimed"),
         ]
-        runtime.poller.run_cycle = Mock(side_effect=[(bad_snapshots, {}), (good_snapshots, {})])
+        runtime.poller.run_cycle = Mock(side_effect=[(bad_snapshots, {}), (good_snapshots, {}), (good_snapshots, {})])
         with patch("scheduler.fire_and_forget", lambda payload: None), patch(
             "scheduler.time.sleep",
             return_value=None,
         ), patch("scheduler.time.monotonic", side_effect=[0, 0]):
             result = runtime._deploy_series_or_raise(series=2)
         self.assertEqual(len(result), 9)
-        self.assertEqual(runtime.poller.run_cycle.call_count, 2)
+        self.assertEqual(runtime.poller.run_cycle.call_count, 3)
 
     def test_baseline_violation_detects_missing_to_present_authkeys(self) -> None:
         runtime, db = self.make_runtime()
@@ -656,7 +657,51 @@ class RuntimeSafetyTests(unittest.TestCase):
         runtime.poll_once()
         self.assertEqual(db.get_team("Team Alpha")["offense_count"], 2)
         self.assertEqual(len(db.list_violations()), 2)
+    def test_deleted_king_violation_falls_back_to_current_owner(self) -> None:
+        runtime, db = self.make_runtime()
+        db.upsert_team_names(["Team Alpha"])
+        db.set_competition_state(status="running", current_series=2)
+        db.set_variant_owner(
+            series=2,
+            variant="C",
+            owner_team="Team Alpha",
+            accepted_mtime_epoch=1000,
+            source_node_host="192.168.0.103",
+            evidence={},
+        )
+        snapshots = [
+            _snapshot(node_host="192.168.0.102", variant="A", king="unclaimed", king_mtime_epoch=1),
+            _snapshot(node_host="192.168.0.103", variant="A", king="unclaimed", king_mtime_epoch=1),
+            _snapshot(node_host="192.168.0.106", variant="A", king="unclaimed", king_mtime_epoch=1),
+            _snapshot(node_host="192.168.0.102", variant="B", king="unclaimed", king_mtime_epoch=1),
+            _snapshot(node_host="192.168.0.103", variant="B", king="unclaimed", king_mtime_epoch=1),
+            _snapshot(node_host="192.168.0.106", variant="B", king="unclaimed", king_mtime_epoch=1),
+            VariantSnapshot(
+                node_host="192.168.0.102",
+                variant="C",
+                king=None,
+                king_mtime_epoch=None,
+                status="failed",
+                sections={"KING": "FILE_MISSING", "KING_STAT": "STAT_FAIL", "ROOT_DIR": "700", "NODE_EPOCH": "1000"},
+                checked_at=datetime.now(UTC),
+            ),
+            _snapshot(node_host="192.168.0.103", variant="C", king="Team Alpha", king_mtime_epoch=1000),
+            _snapshot(node_host="192.168.0.106", variant="C", king="Team Alpha", king_mtime_epoch=1010),
+        ]
+        runtime.poller.run_cycle = Mock(
+            return_value=(
+                snapshots,
+                {("192.168.0.102", "C"): [ViolationHit(4, "king_deleted", {"king": "FILE_MISSING"})]},
+            )
+        )
 
+        runtime.poll_once()
+
+        team = db.get_team("Team Alpha")
+        self.assertEqual(team["offense_count"], 1)
+        violations = db.list_violations()
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0]["offense_name"], "king_deleted")
     def test_pause_blocks_scoring(self) -> None:
         runtime, db = self.make_runtime()
         db.upsert_team_names(["Team Alpha"])
@@ -1010,7 +1055,6 @@ LISTEN 0 1 [::ffff:127.0.0.1]:8005 *:*
             poller.stable_ports_signature(changed),
         )
 
-
 class ConfigLoadingTests(unittest.TestCase):
     def test_dotenv_is_loaded_from_module_directory(self) -> None:
         config_path = Path(__file__).resolve().parent.parent / "config.py"
@@ -1152,6 +1196,37 @@ class ApiEndpointTests(unittest.TestCase):
     def test_status_endpoint_requires_admin_key(self) -> None:
         response = self.client.get("/api/status")
         self.assertEqual(response.status_code, 401)
+
+    def test_poll_endpoint_requires_admin_key_and_cannot_award_points(self) -> None:
+        self.app_module.db.upsert_team_names(["Team Alpha"])
+        self.app_module.db.set_competition_state(status="running", current_series=1)
+        self.app_module.runtime.poller.run_cycle = Mock(
+            return_value=(
+                [
+                    _snapshot(node_host="192.168.0.102", variant="A", king="Team Alpha", king_mtime_epoch=1000),
+                    _snapshot(node_host="192.168.0.103", variant="A", king="Team Alpha", king_mtime_epoch=1010),
+                    _snapshot(node_host="192.168.0.106", variant="A", king="Team Alpha", king_mtime_epoch=1020),
+                    _snapshot(node_host="192.168.0.102", variant="B", king="unclaimed", king_mtime_epoch=1),
+                    _snapshot(node_host="192.168.0.103", variant="B", king="unclaimed", king_mtime_epoch=1),
+                    _snapshot(node_host="192.168.0.106", variant="B", king="unclaimed", king_mtime_epoch=1),
+                    _snapshot(node_host="192.168.0.102", variant="C", king="unclaimed", king_mtime_epoch=1),
+                    _snapshot(node_host="192.168.0.103", variant="C", king="unclaimed", king_mtime_epoch=1),
+                    _snapshot(node_host="192.168.0.106", variant="C", king="unclaimed", king_mtime_epoch=1),
+                ],
+                {},
+            )
+        )
+        self.app_module.runtime.poll_once = Mock(wraps=self.app_module.runtime.poll_once)
+
+        response = self.client.post("/api/poll")
+
+        self.assertEqual(response.status_code, 401)
+        self.app_module.runtime.poll_once.assert_not_called()
+        self.assertEqual(self.app_module.db.get_team("Team Alpha")["total_points"], 0.0)
+        self.assertEqual(self.app_module.db.get_competition()["poll_cycle"], 0)
+        with self.app_module.db._lock:  # noqa: SLF001 - test verifies DB side effects
+            point_count = self.app_module.db._conn.execute("SELECT COUNT(*) FROM point_events").fetchone()[0]
+        self.assertEqual(point_count, 0)
 
     def test_dashboard_route_renders_template(self) -> None:
         response = self.client.get("/")
