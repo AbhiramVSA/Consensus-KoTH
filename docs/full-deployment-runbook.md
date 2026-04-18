@@ -70,6 +70,24 @@ sudo chmod +x /usr/local/bin/docker-compose
 docker-compose version
 ```
 
+Maintenance note:
+If a node loses `/usr/local/bin/docker-compose` during package cleanup, image rollback, or manual admin work, restore it immediately before the next referee rotation:
+
+```bash
+sudo install -d /usr/local/bin
+printf '%s\n' '#!/usr/bin/env bash' 'exec docker compose "$@"' | sudo tee /usr/local/bin/docker-compose >/dev/null
+sudo chmod +x /usr/local/bin/docker-compose
+docker compose version
+docker-compose version
+command -v docker-compose
+```
+
+Expected result:
+
+1. `docker compose version` prints the Compose v2 plugin version.
+2. `docker-compose version` prints the same Compose v2 version via the shim.
+3. `command -v docker-compose` resolves to `/usr/local/bin/docker-compose`.
+
 ## 2.3 Clone repository
 
 For `/opt` layout:
