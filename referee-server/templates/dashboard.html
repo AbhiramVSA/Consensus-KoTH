@@ -528,6 +528,23 @@
       return `${hours}h ${minutes}m`;
     }
 
+    function describeSelectionReason(reason) {
+      switch (String(reason || '')) {
+        case 'no_quorum':
+          return 'seen, waiting for quorum';
+        case 'earliest_quorum':
+          return 'scored by earliest quorum';
+        case 'current_owner_quorum':
+          return 'owner held by quorum';
+        case 'no_valid_claims':
+          return 'no valid claim';
+        case 'insufficient_healthy_replicas':
+          return 'blocked by replica health';
+        default:
+          return reason || '';
+      }
+    }
+
     function renderRuntime(status, runtime) {
       const metricStatus = document.getElementById('metricStatus');
       const metricSeries = document.getElementById('metricSeries');
@@ -555,7 +572,10 @@
       rtPrevious.textContent = formatSeries(runtime.previous_series);
       rtValidated.textContent = formatSeries(runtime.last_validated_series);
       rtValidatedAt.textContent = formatTimestamp(runtime.last_validated_at);
-      rtJobs.textContent = runtime.active_jobs.join(', ') || 'none';
+      const pollLabel = runtime.next_poll_seconds !== null && runtime.next_poll_seconds !== undefined
+        ? `poll in ${formatDuration(runtime.next_poll_seconds)}`
+        : `poll every ${formatDuration(runtime.poll_interval_seconds)}`;
+      rtJobs.textContent = `${runtime.active_jobs.join(', ') || 'none'} | ${pollLabel}`;
       faultReason.textContent = runtime.fault_reason || 'None';
 
       setTone(metricStatus, toneForState(status.competition_status));
@@ -581,6 +601,10 @@
         runtime.next_rotation_seconds !== null && runtime.next_rotation_seconds !== undefined
           ? `Next scheduled rotation is in ${formatDuration(runtime.next_rotation_seconds)}.`
           : 'No rotation timer is currently armed.',
+        runtime.poll_interval_seconds
+          ? `Scoring is evaluated every ${formatDuration(runtime.poll_interval_seconds)}. The next poll is ${runtime.next_poll_seconds !== null && runtime.next_poll_seconds !== undefined ? `in ${formatDuration(runtime.next_poll_seconds)}` : 'not currently scheduled'}.`
+          : 'Poll timing is unavailable.',
+        'A single write does not score by itself. A claim must reach quorum across healthy replicas before points are awarded.',
         bannedTeams.length
           ? `Banned teams: ${bannedTeams.join(', ')}.`
           : 'No teams are currently fully banned.',
@@ -649,7 +673,7 @@
             <td>${escapeHtml(claim.node_host)}</td>
             <td>${escapeHtml(textOrFallback(claim.king))}</td>
             <td><span class="pill ${pillToneClass(claim.status)}">${escapeHtml(claim.status)}</span></td>
-            <td>${claim.selected ? `<span class="pill tone-ok">${escapeHtml(claim.selection_reason || 'selected')}</span>` : escapeHtml(claim.selection_reason || '')}</td>
+            <td>${claim.selected ? `<span class="pill tone-ok">${escapeHtml(describeSelectionReason(claim.selection_reason || 'selected'))}</span>` : escapeHtml(describeSelectionReason(claim.selection_reason || ''))}</td>
           </tr>
         `)
         .join('');
@@ -816,6 +840,7 @@
       const recentCritical = events.filter(event => event.severity === 'critical').slice(0, 3);
       const recentPoints = events.filter(event => event.type === 'points_awarded').slice(0, 3);
       const selectedClaims = claims.filter(claim => claim.selected).slice(0, 3);
+      const quorumWaits = claims.filter(claim => claim.selection_reason === 'no_quorum').slice(0, 3);
       const lines = [
         recentCritical.length
           ? `Recent critical events: ${recentCritical.map(event => event.detail).join(' | ')}`
@@ -823,8 +848,11 @@
         recentPoints.length
           ? `Recent points: ${recentPoints.map(event => event.detail).join(' | ')}`
           : 'No points were awarded in the current event feed window.',
+        quorumWaits.length
+          ? `Waiting on quorum: ${quorumWaits.map(claim => `${claim.variant} on ${claim.node_host} for ${claim.king || 'n/a'}`).join(' | ')}`
+          : 'No recent claims are waiting on quorum.',
         selectedClaims.length
-          ? `Recent winner selection: ${selectedClaims.map(claim => `${claim.variant} -> ${claim.claim || 'n/a'} (${claim.selection_reason || 'selected'})`).join(' | ')}`
+          ? `Recent winner selection: ${selectedClaims.map(claim => `${claim.variant} -> ${claim.king || 'n/a'} (${describeSelectionReason(claim.selection_reason || 'selected')})`).join(' | ')}`
           : 'No winning claims in the current claim window.',
       ];
       renderSummaryList('logsBrief', lines, recentCritical.length ? 'warning' : '');

@@ -51,6 +51,8 @@ class RuntimeResponse(BaseModel):
     competition_status: CompetitionStatus
     current_series: int
     previous_series: int | None
+    next_poll_seconds: int | None
+    poll_interval_seconds: int
     next_rotation_seconds: int | None
     fault_reason: str | None
     last_validated_series: int | None

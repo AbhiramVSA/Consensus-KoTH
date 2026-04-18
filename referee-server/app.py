@@ -919,6 +919,7 @@ def api_runtime() -> RuntimeResponse:
     comp = db.get_competition()
     next_rotation = comp.get("next_rotation")
     next_rotation_seconds = None
+    next_poll_seconds = None
     if next_rotation:
         try:
             dt = datetime.fromisoformat(next_rotation)
@@ -926,11 +927,20 @@ def api_runtime() -> RuntimeResponse:
         except ValueError:
             next_rotation_seconds = None
 
+    poll_job = runtime.scheduler.get_job("poll")
+    if poll_job and getattr(poll_job, "next_run_time", None):
+        try:
+            next_poll_seconds = max(0, int((poll_job.next_run_time - datetime.now(UTC)).total_seconds()))
+        except Exception:
+            next_poll_seconds = None
+
     jobs = sorted(job.id for job in runtime.scheduler.get_jobs())
     return RuntimeResponse(
         competition_status=comp["status"],
         current_series=int(comp["current_series"]),
         previous_series=int(comp["previous_series"]) if comp.get("previous_series") is not None else None,
+        next_poll_seconds=next_poll_seconds,
+        poll_interval_seconds=SETTINGS.poll_interval_seconds,
         next_rotation_seconds=next_rotation_seconds,
         fault_reason=comp.get("fault_reason"),
         last_validated_series=(
