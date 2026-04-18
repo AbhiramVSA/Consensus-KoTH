@@ -3,6 +3,10 @@ set -euo pipefail
 
 # Start the NFS stack explicitly so the no_root_squash path is actually reachable.
 mkdir -p /run/rpcbind /var/lib/nfs/rpc_pipefs /proc/fs/nfsd
+# Exporting the container overlay fails with "does not support NFS export".
+# Mount a dedicated tmpfs so the kernel NFS server can export a real filesystem.
+mountpoint -q /srv/nfs/share || mount -t tmpfs -o mode=0777,size=16m tmpfs /srv/nfs/share
+chmod 777 /srv/nfs/share
 mountpoint -q /proc/fs/nfsd || mount -t nfsd nfsd /proc/fs/nfsd
 mountpoint -q /var/lib/nfs/rpc_pipefs || mount -t rpc_pipefs sunrpc /var/lib/nfs/rpc_pipefs
 
