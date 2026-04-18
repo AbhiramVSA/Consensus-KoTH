@@ -149,6 +149,13 @@
 
         <section class="tab-panels">
           <section id="operationsTab" class="tab-panel is-active">
+            <article class="panel summary-panel">
+              <header class="panel-head">
+                <h2>Event Brief</h2>
+                <p>Short human-readable summary of the current event state.</p>
+              </header>
+              <div id="eventBrief" class="summary-list"></div>
+            </article>
             <div class="two-col-grid">
               <article class="panel">
                 <header class="panel-head">
@@ -199,6 +206,13 @@
           </section>
 
           <section id="routingTab" class="tab-panel">
+            <article class="panel summary-panel">
+              <header class="panel-head">
+                <h2>Routing Brief</h2>
+                <p>Which series is live and which nodes are serving it.</p>
+              </header>
+              <div id="routingBrief" class="summary-list"></div>
+            </article>
             <article class="panel">
               <header class="panel-head">
                 <h2>Traffic Routing</h2>
@@ -216,6 +230,14 @@
 
           <section id="healthTab" class="tab-panel">
             <div class="stack-grid">
+              <article class="panel summary-panel">
+                <header class="panel-head">
+                  <h2>Health Brief</h2>
+                  <p>Immediate health signals worth operator attention.</p>
+                </header>
+                <div id="healthBrief" class="summary-list"></div>
+              </article>
+
               <article class="panel">
                 <header class="panel-head">
                   <h2>Infrastructure</h2>
@@ -258,6 +280,13 @@
           </section>
 
           <section id="logsTab" class="tab-panel">
+            <article class="panel summary-panel">
+              <header class="panel-head">
+                <h2>Log Brief</h2>
+                <p>Recent scoring and failure signals before opening raw logs.</p>
+              </header>
+              <div id="logsBrief" class="summary-list"></div>
+            </article>
             <div class="two-col-grid">
               <article class="panel">
                 <header class="panel-head">
@@ -497,6 +526,33 @@
       setTone(faultReason, runtime.fault_reason ? 'critical' : 'ok');
     }
 
+    function renderSummaryList(elementId, lines, tone = '') {
+      const element = document.getElementById(elementId);
+      element.innerHTML = lines
+        .filter(Boolean)
+        .map(line => `<div class="summary-row ${tone ? `tone-${tone}` : ''}">${escapeHtml(line)}</div>`)
+        .join('') || '<div class="summary-row">No summary available.</div>';
+    }
+
+    function renderEventBrief(status, runtime, teams) {
+      const bannedTeams = teams.filter(team => team.status === 'banned').map(team => team.name);
+      const warnedTeams = teams.filter(team => team.status === 'warned' || team.status === 'series_banned').map(team => team.name);
+      const lines = [
+        `Competition is ${status.competition_status} on ${formatSeries(status.current_series)} with ${status.active_teams} active teams and ${status.containers.length} replicas visible.`,
+        runtime.next_rotation_seconds !== null && runtime.next_rotation_seconds !== undefined
+          ? `Next scheduled rotation is in ${formatDuration(runtime.next_rotation_seconds)}.`
+          : 'No rotation timer is currently armed.',
+        bannedTeams.length
+          ? `Banned teams: ${bannedTeams.join(', ')}.`
+          : 'No teams are currently fully banned.',
+        warnedTeams.length
+          ? `Teams under penalty: ${warnedTeams.join(', ')}.`
+          : 'No teams are currently in warned or series-banned state.',
+        runtime.fault_reason ? `Current fault reason: ${runtime.fault_reason}.` : 'No active control-plane fault is recorded.',
+      ];
+      renderSummaryList('eventBrief', lines, runtime.fault_reason ? 'critical' : '');
+    }
+
     function renderTeams(teams) {
       document.getElementById('teamsTable').innerHTML = teams
         .slice(0, 25)
@@ -607,6 +663,27 @@
           </article>
         `)
         .join('') || '<p class="hint">No active listeners for the current series.</p>';
+
+      const activeHosts = Array.from(new Set(
+        routing.services.flatMap(service => service.servers.map(server => server.host))
+      ));
+      const downServers = routing.services.flatMap(service => service.servers).filter(server => {
+        const normalized = String(server.status || '').toLowerCase();
+        return normalized && normalized !== 'up';
+      });
+      const lines = [
+        routing.services.length
+          ? `${formatSeries(routing.current_series)} is exposed through ${routing.services.length} active listener(s).`
+          : 'No active listeners are available for the current series.',
+        activeHosts.length
+          ? `Traffic can be routed to: ${activeHosts.join(', ')}.`
+          : 'No backend nodes are currently attached.',
+        `Current traffic: ${routing.total_inbound_connections} inbound connection(s), ${routing.total_backend_connections} backend connection(s).`,
+        downServers.length
+          ? `Backend attention required: ${downServers.map(server => `${server.host}:${server.port}=${server.status || 'unknown'}`).join(', ')}.`
+          : 'All visible backends for the active series report UP in HAProxy.',
+      ];
+      renderSummaryList('routingBrief', lines, downServers.length ? 'warning' : '');
     }
 
     function renderTelemetry(telemetry) {
@@ -666,6 +743,51 @@
           ${container.error ? `<p class="hint tone-critical">${escapeHtml(container.error)}</p>` : ''}
         </article>
       `).join('') || '<p class="hint">No container telemetry available.</p>';
+
+      const unreachableHosts = telemetry.hosts.filter(host => !host.reachable).map(host => host.host);
+      const hotHosts = telemetry.hosts.filter(host => host.mem_percent !== null && host.mem_percent >= 85).map(host => `${host.host} memory ${host.mem_percent}%`);
+      const restartedContainers = telemetry.containers.filter(container => (container.restart_count || 0) > 0);
+      const unhealthyContainers = telemetry.containers.filter(container => {
+        const normalized = String(container.health || container.status || '').toLowerCase();
+        return normalized && !['running', 'healthy'].includes(normalized);
+      });
+      const lines = [
+        unreachableHosts.length
+          ? `Unreachable hosts: ${unreachableHosts.join(', ')}.`
+          : 'All configured hosts responded to telemetry collection.',
+        hotHosts.length
+          ? `High memory pressure: ${hotHosts.join(', ')}.`
+          : 'No host is currently above the memory warning threshold.',
+        restartedContainers.length
+          ? `Containers with restarts: ${restartedContainers.map(container => `${container.machine_host}/${container.variant}=${container.restart_count}`).join(', ')}.`
+          : 'No active-series replica has a recorded restart count above zero.',
+        unhealthyContainers.length
+          ? `Replica attention required: ${unhealthyContainers.map(container => `${container.machine_host}/${container.variant}=${container.health || container.status}`).join(', ')}.`
+          : 'All active-series replicas report healthy or running state.',
+      ];
+      renderSummaryList(
+        'healthBrief',
+        lines,
+        unreachableHosts.length || hotHosts.length || unhealthyContainers.length ? 'warning' : ''
+      );
+    }
+
+    function renderLogsBrief(events, claims) {
+      const recentCritical = events.filter(event => event.severity === 'critical').slice(0, 3);
+      const recentPoints = events.filter(event => event.type === 'points_awarded').slice(0, 3);
+      const selectedClaims = claims.filter(claim => claim.selected).slice(0, 3);
+      const lines = [
+        recentCritical.length
+          ? `Recent critical events: ${recentCritical.map(event => event.detail).join(' | ')}`
+          : 'No critical events in the current event feed window.',
+        recentPoints.length
+          ? `Recent points: ${recentPoints.map(event => event.detail).join(' | ')}`
+          : 'No points were awarded in the current event feed window.',
+        selectedClaims.length
+          ? `Recent winner selection: ${selectedClaims.map(claim => `${claim.variant} -> ${claim.claim || 'n/a'} (${claim.selection_reason || 'selected'})`).join(' | ')}`
+          : 'No winning claims in the current claim window.',
+      ];
+      renderSummaryList('logsBrief', lines, recentCritical.length ? 'warning' : '');
     }
 
     async function runAction(action) {
@@ -740,9 +862,11 @@
         renderTeams(teams);
         renderContainers(status.containers);
         renderEvents(events);
+        renderEventBrief(status, runtime, teams);
         renderRouting(routing);
         renderTelemetry(telemetry);
         renderClaims(claims);
+        renderLogsBrief(events, claims);
         renderLogBox('refereeLog', refereeLog);
         renderLogBox('haproxyLog', haproxyLog);
       } catch (error) {
