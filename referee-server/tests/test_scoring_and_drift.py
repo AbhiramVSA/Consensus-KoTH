@@ -595,7 +595,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             [
                 "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process",
                 "LISTEN 0 128 *:8080 *:* users:((\"java\",pid=1,fd=123))",
-                "LISTEN 0 128 127.0.0.1:9005 *:* users:((\"java\",pid=1,fd=124))",
+                "LISTEN 0 128 *:9005 *:* users:((\"java\",pid=1,fd=124))",
             ]
         )
 
