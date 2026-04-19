@@ -1,9 +1,14 @@
 __pycache__/
 *.pyc
 *.log
+.pytest_cache/
 .venv/
 referee-server/referee.db
+/referee.db
+.live-backups/
 .env
 .DS_Store
 .idea/
 .vscode/
+qa/*-results.json
+qa/deployment/live-rule-validation-report.json

@@ -34,6 +34,38 @@ bash qa/deployment/validate_referee_lb.sh \
 
 Both scripts exit non-zero if validation fails.
 
+## 2.25) Lock down host ingress with UFW
+
+Use the firewall helper to make the deployed network policy reproducible instead of leaving
+LB/node exposure as an ad hoc host-side change.
+
+Preview the referee/LB rules:
+
+```bash
+bash qa/deployment/configure_koth_ufw.sh --role referee
+```
+
+Preview node rules so only the LB host can hit published challenge ports while SSH stays on the
+internal management LAN:
+
+```bash
+bash qa/deployment/configure_koth_ufw.sh \
+  --role node \
+  --internal-cidr 192.168.0.0/24 \
+  --challenge-source-cidr 192.168.0.12/32
+```
+
+Apply after review:
+
+```bash
+bash qa/deployment/configure_koth_ufw.sh --role referee --apply
+bash qa/deployment/configure_koth_ufw.sh \
+  --role node \
+  --internal-cidr 192.168.0.0/24 \
+  --challenge-source-cidr 192.168.0.12/32 \
+  --apply
+```
+
 ## 2.5) Emulate referee SSH and team creation locally
 
 Use this to prove the referee bootstrap paths without touching live nodes or a live backend:

@@ -10,6 +10,7 @@ import socket
 import subprocess
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+import math
 import logging
 from pathlib import Path
 
@@ -1103,14 +1104,14 @@ def api_runtime() -> RuntimeResponse:
     if next_rotation:
         try:
             dt = datetime.fromisoformat(next_rotation)
-            next_rotation_seconds = max(0, int((dt - datetime.now(UTC)).total_seconds()))
+            next_rotation_seconds = max(0, math.ceil((dt - datetime.now(UTC)).total_seconds()))
         except ValueError:
             next_rotation_seconds = None
 
     poll_job = runtime.scheduler.get_job("poll")
     if poll_job and getattr(poll_job, "next_run_time", None):
         try:
-            next_poll_seconds = max(0, int((poll_job.next_run_time - datetime.now(UTC)).total_seconds()))
+            next_poll_seconds = max(0, math.ceil((poll_job.next_run_time - datetime.now(UTC)).total_seconds()))
         except Exception:
             next_poll_seconds = None
 
