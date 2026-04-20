@@ -136,6 +136,7 @@ class Database:
                     current_series INTEGER NOT NULL DEFAULT 0,
                     previous_series INTEGER,
                     poll_cycle INTEGER NOT NULL DEFAULT 0,
+                    last_poll_at TEXT,
                     started_at TEXT,
                     next_rotation TEXT,
                     fault_reason TEXT,
@@ -159,6 +160,12 @@ class Database:
                     created_at TEXT NOT NULL
                 );
                 """
+            )
+            self._ensure_column(
+                conn,
+                table="competition",
+                column="last_poll_at",
+                definition="TEXT",
             )
             self._ensure_column(
                 conn,
@@ -188,10 +195,10 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO competition (
-                    id, status, current_series, previous_series, poll_cycle, started_at, next_rotation, fault_reason,
+                    id, status, current_series, previous_series, poll_cycle, last_poll_at, started_at, next_rotation, fault_reason,
                     last_validated_series, last_validated_at
                 )
-                VALUES (1, 'stopped', 0, NULL, 0, ?, NULL, NULL, NULL, NULL)
+                VALUES (1, 'stopped', 0, NULL, 0, NULL, ?, NULL, NULL, NULL, NULL)
                 ON CONFLICT(id) DO NOTHING
                 """,
                 (now,),
@@ -432,8 +439,12 @@ class Database:
         return int(row["count"])
 
     def increment_poll_cycle(self) -> int:
+        now = datetime.now(UTC).isoformat()
         with self.tx() as conn:
-            conn.execute("UPDATE competition SET poll_cycle = poll_cycle + 1 WHERE id=1")
+            conn.execute(
+                "UPDATE competition SET poll_cycle = poll_cycle + 1, last_poll_at=? WHERE id=1",
+                (now,),
+            )
             row = conn.execute("SELECT poll_cycle FROM competition WHERE id=1").fetchone()
         return int(row["poll_cycle"])
 
@@ -518,6 +529,7 @@ class Database:
         status: str | None | object = _UNSET,
         current_series: int | None | object = _UNSET,
         previous_series: int | None | object = _UNSET,
+        last_poll_at: str | None | object = _UNSET,
         next_rotation: str | None | object = _UNSET,
         started_at: str | None | object = _UNSET,
         fault_reason: str | None | object = _UNSET,
@@ -535,6 +547,9 @@ class Database:
         if previous_series is not _UNSET:
             updates.append("previous_series=?")
             params.append(previous_series)
+        if last_poll_at is not _UNSET:
+            updates.append("last_poll_at=?")
+            params.append(last_poll_at)
         if next_rotation is not _UNSET:
             updates.append("next_rotation=?")
             params.append(next_rotation)
@@ -884,6 +899,7 @@ class Database:
                 """
                 UPDATE competition
                 SET poll_cycle=0,
+                    last_poll_at=NULL,
                     previous_series=NULL,
                     fault_reason=NULL,
                     last_validated_series=NULL,

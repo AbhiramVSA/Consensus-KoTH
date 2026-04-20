@@ -231,6 +231,7 @@ Open:
 
 - admin dashboard: `http://127.0.0.1:8000`
 - participant board: `http://127.0.0.1:9000`
+- participant leaderboard: `http://127.0.0.1:9000/leaderboard`
 
 ### Run Tests
 
@@ -327,13 +328,16 @@ The participant board is intended for players. It exposes:
 - public host and port information
 - organizer headline and subheadline
 - current participant notifications
+- a separate live leaderboard page with public standings
 
 ## API Overview
 
 ### Public / Participant
 
 - `GET /`
+- `GET /leaderboard`
 - `GET /api/public/dashboard`
+- `GET /api/public/leaderboard`
 
 ### Admin / Protected
 

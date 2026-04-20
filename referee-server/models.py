@@ -258,6 +258,21 @@ class PublicDashboardResponse(BaseModel):
     notifications: list[PublicNotificationResponse]
 
 
+class PublicLeaderboardEntryResponse(BaseModel):
+    rank: int
+    name: str
+    total_points: float
+
+
+class PublicLeaderboardResponse(BaseModel):
+    current_series: int
+    competition_status: CompetitionStatus
+    updated_at: datetime | None
+    scoring_interval_seconds: int
+    refresh_interval_seconds: int
+    teams: list[PublicLeaderboardEntryResponse]
+
+
 class WebhookPayload(BaseModel):
     event_id: int
     event_type: str

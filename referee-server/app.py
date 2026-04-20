@@ -14,7 +14,7 @@ import math
 import logging
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -33,6 +33,8 @@ from models import (
     PublicDashboardConfigResponse,
     PublicDashboardConfigUpdate,
     PublicDashboardResponse,
+    PublicLeaderboardEntryResponse,
+    PublicLeaderboardResponse,
     PublicNotificationIn,
     PublicNotificationResponse,
     RecoveryResponse,
@@ -945,6 +947,16 @@ def _request_host(request: Request | None) -> str:
     return "192.168.0.12"
 
 
+def _public_refresh_interval_seconds() -> int:
+    return max(3, min(10, SETTINGS.poll_interval_seconds // 6 or 3))
+
+
+def _apply_public_live_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+
+
 def _public_dashboard_payload(request: Request | None = None) -> PublicDashboardResponse:
     competition = db.get_competition()
     current_series = int(competition["current_series"])
@@ -980,12 +992,48 @@ def dashboard(request: Request):
 
 @participant_app.get("/", response_class=HTMLResponse)
 def participant_dashboard(request: Request):
-    return templates.TemplateResponse(request, "participant.html", {"request": request})
+    response = templates.TemplateResponse(request, "participant.html", {"request": request})
+    _apply_public_live_headers(response)
+    return response
+
+
+@participant_app.get("/leaderboard", response_class=HTMLResponse)
+def participant_leaderboard(request: Request):
+    response = templates.TemplateResponse(request, "leaderboard.html", {"request": request})
+    _apply_public_live_headers(response)
+    return response
 
 
 @participant_app.get("/api/public/dashboard", response_model=PublicDashboardResponse)
-def api_public_dashboard(request: Request) -> PublicDashboardResponse:
+def api_public_dashboard(request: Request, response: Response) -> PublicDashboardResponse:
+    _apply_public_live_headers(response)
     return _public_dashboard_payload(request)
+
+
+def _public_leaderboard_payload() -> PublicLeaderboardResponse:
+    competition = db.get_competition()
+    teams = [
+        PublicLeaderboardEntryResponse(
+            rank=index,
+            name=str(team["name"]),
+            total_points=float(team["total_points"]),
+        )
+        for index, team in enumerate(db.list_teams(), start=1)
+    ]
+    return PublicLeaderboardResponse(
+        current_series=int(competition["current_series"]),
+        competition_status=competition["status"],
+        updated_at=competition.get("last_poll_at"),
+        scoring_interval_seconds=SETTINGS.poll_interval_seconds,
+        refresh_interval_seconds=_public_refresh_interval_seconds(),
+        teams=teams,
+    )
+
+
+@participant_app.get("/api/public/leaderboard", response_model=PublicLeaderboardResponse)
+def api_public_leaderboard(response: Response) -> PublicLeaderboardResponse:
+    _apply_public_live_headers(response)
+    return _public_leaderboard_payload()
 
 
 @app.get(

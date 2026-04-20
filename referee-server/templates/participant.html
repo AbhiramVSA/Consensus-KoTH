@@ -14,6 +14,11 @@
 </head>
 <body>
   <main class="page">
+    <nav class="participant-nav" aria-label="Participant pages">
+      <a class="nav-link is-active" href="/">Access Board</a>
+      <a class="nav-link" href="/leaderboard">Leaderboard</a>
+    </nav>
+
     <header class="masthead participant-masthead">
       <section class="brand">
         <p class="eyebrow">Participant Board</p>
@@ -41,6 +46,10 @@
         <span class="metric-label">Notifications</span>
         <strong id="publicNotificationCount">0</strong>
       </article>
+      <article class="metric">
+        <span class="metric-label">Leaderboard</span>
+        <strong><a class="metric-link" href="/leaderboard">Open Live Standings</a></strong>
+      </article>
     </section>
 
     <section class="two-col-grid participant-grid">
@@ -61,6 +70,10 @@
           <div class="summary-row">
             <strong>Current series:</strong>
             <span id="publicSeriesText">n/a</span>
+          </div>
+          <div class="summary-row">
+            <strong>Live leaderboard:</strong>
+            <span><a class="inline-link" href="/leaderboard">Open the public standings page</a></span>
           </div>
         </div>
       </article>

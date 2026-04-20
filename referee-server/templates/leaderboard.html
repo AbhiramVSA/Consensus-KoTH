@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KOTH Leaderboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="page">
+    <nav class="participant-nav" aria-label="Participant pages">
+      <a class="nav-link" href="/">Access Board</a>
+      <a class="nav-link is-active" href="/leaderboard">Leaderboard</a>
+    </nav>
+
+    <header class="masthead participant-masthead">
+      <section class="brand">
+        <p class="eyebrow">Participant Board</p>
+        <h1>Live Leaderboard</h1>
+        <p class="subtitle">Public standings update automatically. Scoring still follows referee poll cadence and quorum rules.</p>
+      </section>
+      <aside class="hero-glass">
+        <label>Live Series</label>
+        <strong id="leaderboardSeries" class="public-callout">n/a</strong>
+        <label>Status</label>
+        <strong id="leaderboardStatus" class="public-callout">n/a</strong>
+      </aside>
+    </header>
+
+    <section class="overview-strip">
+      <article class="metric">
+        <span class="metric-label">Current Leader</span>
+        <strong id="leaderMetric">n/a</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">Top Score</span>
+        <strong id="topScoreMetric">0.0</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">Teams</span>
+        <strong id="teamCountMetric">0</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">Scoring Cadence</span>
+        <strong id="scoringCadenceMetric">n/a</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">Board Refresh</span>
+        <strong id="refreshCadenceMetric">n/a</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">Updated</span>
+        <strong id="updatedMetric">n/a</strong>
+      </article>
+    </section>
+
+    <section class="leaderboard-shell participant-grid">
+      <article class="panel summary-panel">
+        <header class="panel-head">
+          <h2>Standings Notes</h2>
+          <p>What this board means in practice.</p>
+        </header>
+        <div id="leaderboardSummary" class="summary-list"></div>
+      </article>
+
+      <article class="panel">
+        <header class="panel-head">
+          <h2>Rankings</h2>
+          <p>Public standings only, ordered by total points.</p>
+        </header>
+        <div class="table-wrap tall">
+          <table>
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Team</th>
+                <th>Points</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboardTable"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    let refreshTimer = null;
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function formatSeries(series) {
+      return series && series > 0 ? `H${series}` : 'n/a';
+    }
+
+    function toneForState(value) {
+      const normalized = String(value || '').toLowerCase();
+      if (['running', 'active', 'clear'].includes(normalized)) {
+        return 'ok';
+      }
+      if (['paused', 'rotating', 'starting', 'stopping', 'warning', 'warned', 'series_banned'].includes(normalized)) {
+        return 'warning';
+      }
+      if (['faulted', 'critical', 'stopped', 'banned'].includes(normalized)) {
+        return 'critical';
+      }
+      return '';
+    }
+
+    function setTone(element, tone) {
+      element.classList.remove('tone-ok', 'tone-warning', 'tone-critical');
+      if (tone) {
+        element.classList.add(`tone-${tone}`);
+      }
+    }
+
+    function formatTimestamp(value) {
+      if (!value) {
+        return 'n/a';
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+    }
+
+    function formatDuration(seconds) {
+      if (seconds === null || seconds === undefined) {
+        return 'n/a';
+      }
+      if (seconds < 60) {
+        return `${seconds}s`;
+      }
+      const minutes = Math.floor(seconds / 60);
+      const remainder = seconds % 60;
+      if (minutes < 60) {
+        return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+      }
+      const hours = Math.floor(minutes / 60);
+      const minuteRemainder = minutes % 60;
+      return minuteRemainder ? `${hours}h ${minuteRemainder}m` : `${hours}h`;
+    }
+
+    function renderSummary(lines) {
+      document.getElementById('leaderboardSummary').innerHTML = lines
+        .map(line => `<div class="summary-row">${escapeHtml(line)}</div>`)
+        .join('') || '<div class="summary-row">No leaderboard summary available.</div>';
+    }
+
+    function renderLeaderboard(payload) {
+      const leader = payload.teams[0] || null;
+      document.getElementById('leaderboardSeries').textContent = formatSeries(payload.current_series);
+      document.getElementById('leaderboardStatus').textContent = payload.competition_status;
+      document.getElementById('leaderMetric').textContent = leader ? leader.name : 'No teams yet';
+      document.getElementById('topScoreMetric').textContent = leader ? leader.total_points.toFixed(1) : '0.0';
+      document.getElementById('teamCountMetric').textContent = payload.teams.length;
+      document.getElementById('scoringCadenceMetric').textContent = formatDuration(payload.scoring_interval_seconds);
+      document.getElementById('refreshCadenceMetric').textContent = formatDuration(payload.refresh_interval_seconds);
+      document.getElementById('updatedMetric').textContent = formatTimestamp(payload.updated_at);
+      setTone(document.getElementById('leaderboardStatus'), toneForState(payload.competition_status));
+
+      document.getElementById('leaderboardTable').innerHTML = payload.teams.map(team => `
+        <tr class="${team.rank <= 3 ? 'leaderboard-top-row' : ''}">
+          <td><strong>#${team.rank}</strong></td>
+          <td>${escapeHtml(team.name)}</td>
+          <td>${team.total_points.toFixed(1)}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="3">No teams registered yet.</td></tr>';
+
+      renderSummary([
+        leader
+          ? `${leader.name} currently leads with ${leader.total_points.toFixed(1)} point(s).`
+          : 'No team has entered the standings yet.',
+        payload.updated_at
+          ? `Standings last changed after a scoring poll at ${formatTimestamp(payload.updated_at)}.`
+          : 'No scoring poll has updated the standings yet.',
+        `The referee evaluates scoring every ${formatDuration(payload.scoring_interval_seconds)} and this page refreshes every ${formatDuration(payload.refresh_interval_seconds)}.`,
+        payload.teams.length
+          ? `The board is ordered by total points across all completed scoring polls.`
+          : 'Teams will appear here after they are registered and the event is running.',
+      ]);
+    }
+
+    function scheduleRefresh(seconds) {
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
+      const waitMs = Math.max(2000, Number(seconds || 5) * 1000);
+      refreshTimer = setTimeout(() => {
+        refreshLeaderboard().catch(() => {});
+      }, waitMs);
+    }
+
+    async function refreshLeaderboard() {
+      const response = await fetch('/api/public/leaderboard');
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const payload = await response.json();
+      renderLeaderboard(payload);
+      scheduleRefresh(payload.refresh_interval_seconds);
+    }
+
+    refreshLeaderboard()
+      .catch(() => {
+        scheduleRefresh(5);
+      });
+  </script>
+</body>
+</html>

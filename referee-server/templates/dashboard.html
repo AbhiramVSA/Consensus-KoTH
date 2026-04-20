@@ -240,7 +240,7 @@
                       <input id="publicSubheadline" type="text" placeholder="Use this board for the current orchestrator address, live challenge ports, and organizer notices." />
                       <span></span>
                     </div>
-                    <p class="hint" id="publicBoardHint">The participant board is served separately on port `9000`.</p>
+                    <p class="hint" id="publicBoardHint">The participant board and leaderboard are served separately on port `9000`.</p>
                   </div>
                 </section>
 
@@ -1124,7 +1124,7 @@
         }
       }
       const previewHost = config.orchestrator_host || window.location.hostname;
-      document.getElementById('publicBoardHint').textContent = `Public board: http://${previewHost}:9000/`;
+      document.getElementById('publicBoardHint').textContent = `Public board: http://${previewHost}:9000/ | Leaderboard: http://${previewHost}:9000/leaderboard`;
       document.getElementById('publicNotificationsTable').innerHTML = notifications
         .map(notification => `
           <tr>

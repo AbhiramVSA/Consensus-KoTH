@@ -1240,6 +1240,11 @@ class ApiEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
 
+    def test_participant_leaderboard_route_renders_template(self) -> None:
+        response = self.participant_client.get("/leaderboard")
+
+        self.assertEqual(response.status_code, 200)
+
     def test_lb_endpoint_parses_frontend_backend_haproxy_config(self) -> None:
         self.app_module.app.dependency_overrides[self.app_module.require_admin_api_key] = lambda: None
         self.addCleanup(self.app_module.app.dependency_overrides.clear)
@@ -1551,6 +1556,64 @@ listen p10012
         self.assertEqual(payload["orchestrator_host"], "172.21.0.13")
         self.assertEqual(payload["port_ranges"], "10010-10012")
         self.assertEqual(payload["headline"], "Current Access Window")
+        self.assertEqual(response.headers["cache-control"], "no-cache, max-age=0, must-revalidate")
+
+    def test_public_leaderboard_endpoint_returns_ranked_participant_safe_rows(self) -> None:
+        polled_at = datetime(2026, 4, 20, 11, 15, tzinfo=UTC).isoformat()
+        self.app_module.db.set_competition_state(
+            status="running",
+            current_series=4,
+            last_poll_at=polled_at,
+        )
+        self.app_module.db.upsert_team_names(["Team Alpha", "Team Beta", "Team Gamma"])
+        self.app_module.db.add_points("Team Beta", "A", 4, 6.0, 1)
+        self.app_module.db.add_points("Team Alpha", "B", 4, 9.5, 1)
+        self.app_module.db.set_team_status("Team Gamma", status="warned", offense_count=1)
+
+        response = self.participant_client.get("/api/public/leaderboard")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-cache, max-age=0, must-revalidate")
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        payload = response.json()
+        self.assertEqual(payload["competition_status"], "running")
+        self.assertEqual(payload["current_series"], 4)
+        self.assertEqual(
+            datetime.fromisoformat(payload["updated_at"].replace("Z", "+00:00")),
+            datetime.fromisoformat(polled_at),
+        )
+        self.assertEqual(payload["scoring_interval_seconds"], self.app_module.SETTINGS.poll_interval_seconds)
+        self.assertEqual(payload["refresh_interval_seconds"], 5)
+        self.assertEqual(
+            payload["teams"],
+            [
+                {
+                    "rank": 1,
+                    "name": "Team Alpha",
+                    "total_points": 9.5,
+                },
+                {
+                    "rank": 2,
+                    "name": "Team Beta",
+                    "total_points": 6.0,
+                },
+                {
+                    "rank": 3,
+                    "name": "Team Gamma",
+                    "total_points": 0.0,
+                },
+            ],
+        )
+
+    def test_increment_poll_cycle_updates_last_poll_at(self) -> None:
+        before = datetime.now(UTC)
+
+        poll_cycle = self.app_module.db.increment_poll_cycle()
+
+        self.assertEqual(poll_cycle, 1)
+        state = self.app_module.db.get_competition()
+        self.assertIsNotNone(state["last_poll_at"])
+        self.assertGreaterEqual(datetime.fromisoformat(state["last_poll_at"]), before)
 
     def test_admin_public_config_and_notifications_flow(self) -> None:
         self.app_module.app.dependency_overrides[self.app_module.require_admin_api_key] = lambda: None
