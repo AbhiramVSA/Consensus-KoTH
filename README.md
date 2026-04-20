@@ -3,6 +3,16 @@
 Consensus KoTH is a distributed King of the Hill cyber range with a centralized referee, quorum-based ownership validation, replicated challenge nodes, and operator tooling for lifecycle control, scoring, health validation, and recovery.
 
 It is built for events where a single write on a single box is not good enough to declare ownership. Players still compromise services and write a team name into `/root/king.txt`, but points are awarded only when the referee has enough healthy evidence across replicas to trust the claim.
+- Production runtime is the distributed referee-managed model under `referee-server/` plus node-local `h1..h8` directories on `node1/node2/node3`.
+- `Series HN/docker-compose.yml` files are the per-series deploy artifacts copied into node-local `hN/` directories and validated by the referee before a series becomes active.
+- Root-level `docker-compose.yml` and `rotate.sh` are local/dev-only artifacts and must not be treated as the production control plane.
+- Operators should use `/api/runtime`, `/api/recover/validate`, and `/api/recover/redeploy` for runtime inspection and recovery.
+- The dashboard now includes admin team controls: create teams, manually ban a team, and manually unban a team. New team names must satisfy the same claim rules as `king.txt` ownership, so reserved or malformed names such as `unclaimed` are rejected.
+- The public participant board on `:9000` now shows the current access window, organizer notices, hard-bound rules, a live leaderboard, and a cumulative score graph for the leading teams.
+- The admin dashboard on `:8000` now renders the full team table instead of truncating to the first 25 teams.
+- Manual test execution guide: [docs/manual-tester-checklist.md](docs/manual-tester-checklist.md)
+- Referee rule validation guide: [docs/referee-rule-validation-checklist.md](docs/referee-rule-validation-checklist.md)
+- Separate attacker-style Codex prompt: [docs/codex-h1a-player-prompt.md](docs/codex-h1a-player-prompt.md)
 
 ## Why This Exists
 

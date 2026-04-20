@@ -554,7 +554,6 @@
       renderRuntime(runtimeSnapshot.status, runtime);
       renderEventBrief(runtimeSnapshot.status, runtime, runtimeSnapshot.teams);
     }
-
     async function post(url, body) {
       const res = await fetchWithTimeout(url, {
         method: 'POST',
@@ -866,7 +865,6 @@
 
     function renderTeams(teams) {
       document.getElementById('teamsTable').innerHTML = teams
-        .slice(0, 25)
         .map(team => `
           <tr>
             <td>${escapeHtml(team.name)}</td>

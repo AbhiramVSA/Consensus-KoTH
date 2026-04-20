@@ -35,6 +35,8 @@ from models import (
     PublicDashboardResponse,
     PublicLeaderboardEntryResponse,
     PublicLeaderboardResponse,
+    PublicLeaderboardPoint,
+    PublicLeaderboardSeries,
     PublicNotificationIn,
     PublicNotificationResponse,
     RecoveryResponse,
@@ -957,10 +959,38 @@ def _apply_public_live_headers(response: Response) -> None:
     response.headers["X-Content-Type-Options"] = "nosniff"
 
 
+def _public_leaderboard_series(teams: list[TeamResponse]) -> list[PublicLeaderboardSeries]:
+    ranked = [team for team in teams if team.total_points > 0][:8]
+    if not ranked:
+        return []
+    selected_names = [team.name for team in ranked]
+    totals = {team.name: 0.0 for team in ranked}
+    series_points: dict[str, list[PublicLeaderboardPoint]] = {team.name: [] for team in ranked}
+    for row in db.list_point_events(team_names=selected_names):
+        team_name = str(row["team_name"])
+        totals[team_name] += float(row["points"])
+        series_points[team_name].append(
+            PublicLeaderboardPoint(
+                timestamp=datetime.fromisoformat(str(row["timestamp"])),
+                total_points=totals[team_name],
+            )
+        )
+    return [
+        PublicLeaderboardSeries(
+            team_name=team.name,
+            total_points=team.total_points,
+            points=series_points[team.name],
+        )
+        for team in ranked
+    ]
 def _public_dashboard_payload(request: Request | None = None) -> PublicDashboardResponse:
     competition = db.get_competition()
     current_series = int(competition["current_series"])
     config = db.get_public_dashboard_config()
+    teams = [
+        TeamResponse(**row)
+        for row in db.list_teams()
+    ]
     notifications = [
         PublicNotificationResponse(**row)
         for row in db.list_public_notifications(limit=12)
@@ -973,6 +1003,7 @@ def _public_dashboard_payload(request: Request | None = None) -> PublicDashboard
     subheadline = (config.get("subheadline") or "").strip() or (
         "Use this board for the current orchestrator address, live challenge ports, and organizer notices."
     )
+    leaderboard_series = _public_leaderboard_series(teams)
     return PublicDashboardResponse(
         current_series=current_series,
         competition_status=competition["status"],
@@ -982,6 +1013,8 @@ def _public_dashboard_payload(request: Request | None = None) -> PublicDashboard
         subheadline=subheadline,
         updated_at=config.get("updated_at"),
         notifications=notifications,
+        teams=teams,
+        leaderboard_series=leaderboard_series,
     )
 
 
