@@ -51,33 +51,115 @@ DEFAULT_MIN_HEALTHY_NODES: int = 2
 # Test doubles
 # ---------------------------------------------------------------------------
 class DummySSH:
-    """Recording ``SSHClientPool`` stand-in.
+    """Recording ``SSHClientPool`` stand-in with assertion helpers.
 
     Every ``exec()`` call is appended to ``commands`` as ``(host, command)``.
     Returns a successful exit code by default so callers that do not care
-    about the response can ignore it; tests that do care can subclass or set
-    ``response`` to a custom tuple.
+    about the response can ignore it; tests that care can supply a different
+    default via ``response``, or a per-host override via ``reply_on``.
+
+    The assertion helpers exist because the legacy tests leaned on fragile
+    patterns like ``self.assertEqual(len(ssh.commands), 1)`` that only pin
+    the *count* of calls, not the intent. A test that asserts
+    ``ssh.assert_command_to("192.168.0.106", contains="Team Alpha")`` keeps
+    passing if the scheduler adds a second unrelated command but fails
+    immediately if the reconcile call disappears.
     """
 
     def __init__(self, response: tuple[int, str, str] = (0, "OK", "")) -> None:
         self.commands: list[tuple[str, str]] = []
         self.response = response
+        self._per_host_replies: dict[str, tuple[int, str, str]] = {}
 
     def exec(self, host: str, command: str) -> tuple[int, str, str]:
         self.commands.append((host, command))
-        return self.response
+        return self._per_host_replies.get(host, self.response)
 
     def close(self) -> None:  # pragma: no cover - nothing to clean up
         return
 
+    # -- scripting helpers ---------------------------------------------------
+    def reply_on(self, host: str, response: tuple[int, str, str]) -> None:
+        """Override the exec() return value for ``host``.
+
+        Use this when a test needs the production code to see a non-success
+        exit code or specific stdout from a particular node without altering
+        the default.
+        """
+        self._per_host_replies[host] = response
+
+    # -- introspection helpers ----------------------------------------------
+    def commands_to(self, host: str) -> list[str]:
+        """Every command shipped to ``host`` in the order they were sent."""
+        return [cmd for target, cmd in self.commands if target == host]
+
+    def last_command_to(self, host: str) -> str:
+        """The most recent command shipped to ``host``; raises if none."""
+        matches = self.commands_to(host)
+        if not matches:
+            raise AssertionError(f"no commands were sent to {host}")
+        return matches[-1]
+
+    # -- assertion helpers --------------------------------------------------
+    def assert_no_commands(self) -> None:
+        """Fail if any exec() call was made. Cheaper than tracking intent."""
+        if self.commands:
+            raise AssertionError(
+                f"expected zero SSH commands; got {len(self.commands)}: "
+                + ", ".join(f"{host}:{cmd[:40]!r}" for host, cmd in self.commands)
+            )
+
+    def assert_command_count(self, expected: int) -> None:
+        if len(self.commands) != expected:
+            raise AssertionError(
+                f"expected {expected} SSH commands, got {len(self.commands)}: "
+                + ", ".join(f"{host}:{cmd[:40]!r}" for host, cmd in self.commands)
+            )
+
+    def assert_command_to(self, host: str, *, contains: str | None = None) -> str:
+        """Assert at least one command was shipped to ``host``. If
+        ``contains`` is given, at least one such command must include the
+        substring. Returns the matching command so callers can inspect it
+        further without re-searching.
+        """
+        matches = self.commands_to(host)
+        if not matches:
+            raise AssertionError(
+                f"no SSH commands went to {host}; saw {[t for t, _ in self.commands]}"
+            )
+        if contains is None:
+            return matches[-1]
+        for cmd in matches:
+            if contains in cmd:
+                return cmd
+        raise AssertionError(
+            f"no command to {host} contained {contains!r}; "
+            f"saw {[cmd[:80] for cmd in matches]}"
+        )
+
+    def assert_command_contains(self, substr: str) -> tuple[str, str]:
+        """Assert at least one command anywhere contains ``substr``.
+        Returns the matching ``(host, command)`` pair.
+        """
+        for host, cmd in self.commands:
+            if substr in cmd:
+                return host, cmd
+        raise AssertionError(
+            f"no SSH command contained {substr!r}; "
+            f"saw {[(t, c[:60]) for t, c in self.commands]}"
+        )
+
 
 class DummyScheduler:
-    """Minimal APScheduler stand-in that records jobs in a plain dict.
+    """Minimal APScheduler stand-in with assertion helpers.
 
     The production ``BackgroundScheduler`` spawns a thread, consults its
     own persistence layer, and fires jobs on wall-clock intervals. None of
     that belongs in a unit test. This fake accepts the same ``add_job`` /
-    ``remove_job`` / ``get_job`` surface and never runs any code.
+    ``remove_job`` / ``get_job`` surface and never runs any code; it also
+    exposes ``assert_job_scheduled`` / ``assert_job_not_scheduled`` /
+    ``assert_job_count`` so tests can read intent directly instead of
+    poking at ``runtime.scheduler.jobs`` by key.
     """
 
     def __init__(self) -> None:
@@ -112,6 +194,40 @@ class DummyScheduler:
 
     def remove_job(self, job_id: str) -> None:
         self.jobs.pop(job_id, None)
+
+    # -- introspection helpers ----------------------------------------------
+    def job_ids(self) -> set[str]:
+        return set(self.jobs)
+
+    # -- assertion helpers --------------------------------------------------
+    def assert_job_scheduled(
+        self, job_id: str, *, trigger: str | None = None
+    ) -> dict[str, object]:
+        """Assert ``job_id`` is registered. Optionally pin its trigger kind
+        (``"interval"``, ``"date"``, etc.). Returns the job payload so the
+        caller can inspect run_date/seconds without a second lookup.
+        """
+        job = self.jobs.get(job_id)
+        if job is None:
+            raise AssertionError(
+                f"job {job_id!r} not scheduled; have {sorted(self.jobs)}"
+            )
+        if trigger is not None and job.get("trigger") != trigger:
+            raise AssertionError(
+                f"job {job_id!r} trigger is {job.get('trigger')!r}, expected {trigger!r}"
+            )
+        return job
+
+    def assert_job_not_scheduled(self, job_id: str) -> None:
+        if job_id in self.jobs:
+            raise AssertionError(f"job {job_id!r} should not be scheduled but is")
+
+    def assert_job_count(self, expected: int) -> None:
+        if len(self.jobs) != expected:
+            raise AssertionError(
+                f"expected {expected} scheduled jobs, got {len(self.jobs)}: "
+                f"{sorted(self.jobs)}"
+            )
 
 
 class DummyTemplates:

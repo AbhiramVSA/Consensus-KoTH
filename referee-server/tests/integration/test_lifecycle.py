@@ -662,11 +662,14 @@ class RuntimeSafetyTests(unittest.TestCase):
 
         runtime.poll_once()
 
+        # Intent under test: exactly ONE reconcile SSH goes to the divergent
+        # node (192.168.0.106, holder of Team Beta) carrying the
+        # authoritative owner's name. If a future change reconciles to zero
+        # nodes or fans out to all three, either scenario should fail this
+        # test — not just "the count isn't 1".
         ssh = runtime.ssh_pool
-        self.assertEqual(len(ssh.commands), 1)
-        host, command = ssh.commands[0]
-        self.assertEqual(host, "192.168.0.106")
-        self.assertIn("Team Alpha", command)
+        ssh.assert_command_count(1)
+        ssh.assert_command_to("192.168.0.106", contains="Team Alpha")
         self.assertTrue(
             any(
                 event["detail"] == "Reconciled A replica to authoritative owner"
@@ -695,10 +698,13 @@ class RuntimeSafetyTests(unittest.TestCase):
 
         runtime.start_scheduler()
 
-        self.assertIn("poll", runtime.scheduler.jobs)
-        self.assertIn("rotate", runtime.scheduler.jobs)
-        self.assertEqual(runtime.scheduler.jobs["rotate"]["trigger"], "date")
-        self.assertEqual(runtime.scheduler.jobs["rotate"]["run_date"], future_rotation)
+        # Both the poll cron and the one-shot rotation must be present; the
+        # rotation must be a "date" trigger pinned to the timestamp the DB
+        # holds. assert_job_scheduled returns the payload so the ``run_date``
+        # assertion stays one line.
+        runtime.scheduler.assert_job_scheduled("poll")
+        rotate_job = runtime.scheduler.assert_job_scheduled("rotate", trigger="date")
+        self.assertEqual(rotate_job["run_date"], future_rotation)
 
     def test_runtime_endpoint_model_fields_persist_validation_state(self) -> None:
         runtime, db = self.make_runtime()
