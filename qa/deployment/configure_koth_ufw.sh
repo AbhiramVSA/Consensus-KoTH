@@ -5,6 +5,7 @@ ROLE=""
 INTERNAL_CIDR="192.168.0.0/24"
 CHALLENGE_SOURCE_CIDR=""
 APPLY=0
+ACKNOWLEDGE_SSH_LOCKOUT=0
 
 TCP_PORTS=(
   10001 10002 10004
@@ -23,7 +24,11 @@ MODE="preview"
 usage() {
   cat <<'EOF'
 Usage:
-  bash qa/deployment/configure_koth_ufw.sh --role referee|node [--internal-cidr CIDR] [--challenge-source-cidr CIDR] [--apply]
+  bash qa/deployment/configure_koth_ufw.sh --role referee|node
+                                           [--internal-cidr CIDR]
+                                           [--challenge-source-cidr CIDR]
+                                           [--apply]
+                                           [--acknowledge-ssh-lockout]
 
 Defaults:
   --internal-cidr 192.168.0.0/24
@@ -34,6 +39,13 @@ Behavior:
   - --apply runs the commands and enables ufw
   - only ports listed in docs/manual-tester-checklist.md are opened
   - SSH is restricted to the internal CIDR on both host roles
+
+Safety:
+  --apply refuses to run when invoked over ssh unless
+  --acknowledge-ssh-lockout is also passed. The ruleset this script
+  installs allows SSH only from --internal-cidr, so applying from an
+  ssh session originating outside that CIDR will lock you out the moment
+  ufw flips active.
 
 Host roles:
   referee
@@ -63,6 +75,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --apply)
       APPLY=1
+      shift
+      ;;
+    --acknowledge-ssh-lockout)
+      ACKNOWLEDGE_SSH_LOCKOUT=1
       shift
       ;;
     -h|--help)
@@ -153,6 +169,41 @@ apply_plan() {
 build_rule_set
 if [[ "$APPLY" -eq 1 ]]; then
   MODE="apply"
+
+  # UFW-lockout guard.
+  #
+  # Applying this rule set flushes existing rules and re-enables ufw with
+  # SSH restricted to INTERNAL_CIDR. If the operator is currently ssh'd in
+  # from an IP outside INTERNAL_CIDR, ``ufw enable`` will drop their
+  # session the moment conntrack ages out and they lose console access
+  # until someone drives to the box.
+  #
+  # Run this check BEFORE the ``command -v ufw`` probe — a fresh host that
+  # does not yet have ufw installed is exactly the scenario where an
+  # operator is most likely to be ssh'd in and unaware of the blast radius.
+  #
+  # $SSH_CONNECTION, when set by sshd, contains "client_ip client_port
+  # server_ip server_port". We refuse --apply from an ssh session unless
+  # the operator passes --acknowledge-ssh-lockout, which is the smallest
+  # explicit opt-in that still lets an experienced operator proceed.
+  if [[ -n "${SSH_CONNECTION:-}" && "$ACKNOWLEDGE_SSH_LOCKOUT" -ne 1 ]]; then
+    ssh_client_ip="${SSH_CONNECTION%% *}"
+    cat >&2 <<EOF
+
+REFUSING TO --apply OVER AN SSH SESSION.
+
+You are running this script over ssh (SSH_CONNECTION=$SSH_CONNECTION).
+The plan above flushes ufw and re-enables it with SSH allowed only from
+$INTERNAL_CIDR. If your client address ($ssh_client_ip) is not inside
+that CIDR, this script will lock you out the moment the new ruleset
+takes effect.
+
+If you are intentionally applying from a console or a host inside
+$INTERNAL_CIDR, re-run with --acknowledge-ssh-lockout to proceed.
+EOF
+    exit 1
+  fi
+
   if ! command -v ufw >/dev/null 2>&1; then
     echo "ufw is not installed or not in PATH" >&2
     exit 1

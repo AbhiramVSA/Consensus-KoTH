@@ -74,10 +74,38 @@ REMOTE_SERIES_ROOT="${REMOTE_SERIES_ROOT:-/opt/KOTH_orchestrator}"
 NODE_HOSTS="${NODE_HOSTS:-}"
 NODE_SSH_TARGETS="${NODE_SSH_TARGETS:-}"
 
+# Expand ~ in the key path before testing existence. Bash does not expand
+# tildes in quoted strings, so an env value like "~/.ssh/koth_referee"
+# would otherwise fail the -r check below.
+SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY/#\~/$HOME}"
+
 if [[ -z "$NODE_HOSTS" ]]; then
   echo "NODE_HOSTS is empty in $REFEREE_DIR/.env" >&2
   exit 1
 fi
+
+# Fail fast if the configured key is unreadable. The old behavior was to
+# launch ssh anyway, which produced cryptic "Permission denied (publickey)"
+# output halfway through the build loop — long after the operator had
+# stopped paying attention.
+if [[ ! -r "$SSH_PRIVATE_KEY" ]]; then
+  echo "SSH_PRIVATE_KEY not readable: $SSH_PRIVATE_KEY" >&2
+  echo "Set SSH_PRIVATE_KEY in $REFEREE_DIR/.env to an existing private key." >&2
+  exit 1
+fi
+
+# Shared ssh options: bounded connect, no interactive prompts, and a read
+# timeout ServerAlive check so a hung node eventually drops out of the
+# loop instead of silently blocking the whole prebuild.
+SSH_OPTS=(
+  -i "$SSH_PRIVATE_KEY"
+  -p "$SSH_PORT"
+  -o ConnectTimeout=30
+  -o BatchMode=yes
+  -o StrictHostKeyChecking=accept-new
+  -o ServerAliveInterval=30
+  -o ServerAliveCountMax=3
+)
 
 IFS=',' read -r -a HOSTS <<<"$NODE_HOSTS"
 IFS=',' read -r -a TARGETS <<<"$NODE_SSH_TARGETS"
@@ -147,7 +175,7 @@ for idx in "${!HOSTS[@]}"; do
     fi
     remote_dir="${REMOTE_SERIES_ROOT}/h${series}"
     echo "-- H${series}: validating compose"
-    if ! ssh -i "$SSH_PRIVATE_KEY" -p "$SSH_PORT" "$target" \
+    if ! ssh "${SSH_OPTS[@]}" "$target" \
       "cd '$remote_dir' && test -f docker-compose.yml && docker compose config -q"; then
       echo "[FAIL] $host H${series}: compose validation failed" >&2
       failures=$((failures + 1))
@@ -155,7 +183,7 @@ for idx in "${!HOSTS[@]}"; do
     fi
 
     echo "-- H${series}: building images"
-    if ! ssh -i "$SSH_PRIVATE_KEY" -p "$SSH_PORT" "$target" \
+    if ! ssh "${SSH_OPTS[@]}" "$target" \
       "cd '$remote_dir' && docker compose build $build_flag"; then
       echo "[FAIL] $host H${series}: build failed" >&2
       failures=$((failures + 1))

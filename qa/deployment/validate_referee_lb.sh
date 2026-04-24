@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Per-run scratch directory. Created eagerly and removed on ANY exit path
+# (clean exit, non-zero exit, SIGINT, SIGTERM). Previously the script
+# scattered ${TMPDIR_SCRATCH}/ref_*.out files and never cleaned them up, which left
+# stale output from old runs confusing the next operator.
+TMPDIR_SCRATCH="$(mktemp -d -t koth-referee-validate.XXXXXX)"
+trap 'rm -rf "$TMPDIR_SCRATCH"' EXIT INT TERM
+
 SERIES_ROOT="/opt/KOTH_orchestrator"
 REFEREE_DIR="/opt/KOTH_orchestrator/repo/referee-server"
 API_URL="http://127.0.0.1:8000"
@@ -164,22 +171,22 @@ if [[ -f "$REFEREE_DIR/.env" ]]; then
 fi
 
 if [[ -f "$REFEREE_DIR/setup_cli.py" ]]; then
-  if run_in_referee_env "./.venv/bin/python -c 'from config import SETTINGS; SETTINGS.validate_runtime()' >/tmp/ref_config_check.out 2>/tmp/ref_config_check.err"; then
+  if run_in_referee_env "./.venv/bin/python -c 'from config import SETTINGS; SETTINGS.validate_runtime()' >${TMPDIR_SCRATCH}/ref_config_check.out 2>${TMPDIR_SCRATCH}/ref_config_check.err"; then
     pass "referee runtime configuration validates"
   else
-    fail "referee runtime configuration invalid (see /tmp/ref_config_check.err)"
+    fail "referee runtime configuration invalid (see ${TMPDIR_SCRATCH}/ref_config_check.err)"
   fi
 
-  if run_in_referee_env "./.venv/bin/python setup_cli.py --series 1 >/tmp/ref_setup_cli.out 2>/tmp/ref_setup_cli.err"; then
+  if run_in_referee_env "./.venv/bin/python setup_cli.py --series 1 >${TMPDIR_SCRATCH}/ref_setup_cli.out 2>${TMPDIR_SCRATCH}/ref_setup_cli.err"; then
     pass "setup_cli.py --series 1 succeeded"
   else
-    fail "setup_cli.py --series 1 failed (see /tmp/ref_setup_cli.err)"
+    fail "setup_cli.py --series 1 failed (see ${TMPDIR_SCRATCH}/ref_setup_cli.err)"
   fi
 else
   fail "setup_cli.py missing in referee dir"
 fi
 
-http_code="$(curl -s -o /tmp/ref_status.json -w '%{http_code}' "$API_URL/api/status" || true)"
+http_code="$(curl -s -o ${TMPDIR_SCRATCH}/ref_status.json -w '%{http_code}' "$API_URL/api/status" || true)"
 if [[ "$http_code" == "200" ]]; then
   pass "referee API status endpoint reachable"
   if [[ "$SERVICE_ACTIVE" -eq 1 ]]; then
@@ -187,7 +194,7 @@ if [[ "$http_code" == "200" ]]; then
   else
     pass "referee reachable in manual mode (uvicorn without systemd)"
   fi
-  if jq -e '.competition_status and .current_series != null' /tmp/ref_status.json >/dev/null 2>&1; then
+  if jq -e '.competition_status and .current_series != null' ${TMPDIR_SCRATCH}/ref_status.json >/dev/null 2>&1; then
     pass "referee API status payload shape valid"
   else
     fail "referee API status payload malformed"
@@ -201,10 +208,10 @@ else
   fail "referee API status endpoint not healthy (HTTP $http_code)"
 fi
 
-runtime_code="$(curl -s -o /tmp/ref_runtime.json -w '%{http_code}' "$API_URL/api/runtime" || true)"
+runtime_code="$(curl -s -o ${TMPDIR_SCRATCH}/ref_runtime.json -w '%{http_code}' "$API_URL/api/runtime" || true)"
 if [[ "$runtime_code" == "200" ]]; then
   pass "referee API runtime endpoint reachable"
-  if jq -e '.competition_status and .current_series != null and .active_jobs' /tmp/ref_runtime.json >/dev/null 2>&1; then
+  if jq -e '.competition_status and .current_series != null and .active_jobs' ${TMPDIR_SCRATCH}/ref_runtime.json >/dev/null 2>&1; then
     pass "referee API runtime payload shape valid"
   else
     fail "referee API runtime payload malformed"
