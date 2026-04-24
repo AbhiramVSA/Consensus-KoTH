@@ -809,3 +809,184 @@ class RuntimeSafetyTests(unittest.TestCase):
         state = db.get_competition()
         self.assertEqual(state["status"], "faulted")
         self.assertIn("Recovery redeploy for H2 failed", state["fault_reason"])
+
+
+# ---------------------------------------------------------------------------
+# Edge cases for the scheduler FSM guards.
+#
+# Every lifecycle method has a set of states from which it refuses to act.
+# ``start_competition`` silently returns from non-stopped states;
+# ``pause_rotation`` silently returns when not running; ``rotate_to_series``
+# silently returns for out-of-range series; ``recover_current_series``
+# raises RuntimeGuardError from any state other than paused/faulted.
+#
+# These tests pin each of those guards explicitly so a refactor that
+# reorders conditions or converts a silent return into a raise (or vice
+# versa) lands on a failed test rather than drifting operator-visible
+# behavior.
+# ---------------------------------------------------------------------------
+class LifecycleGuardTests(unittest.TestCase):
+    def make_runtime(self) -> tuple[RefereeRuntime, Database]:
+        fd, raw_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        db_path = Path(raw_path)
+        db = Database(db_path)
+        db.initialize()
+        self.addCleanup(lambda: db_path.exists() and db_path.unlink())
+        self.addCleanup(db.close)
+        return RefereeRuntime(db, DummySSH()), db
+
+    # ---- start_competition ------------------------------------------------
+    def test_start_competition_is_silent_noop_while_already_running(self) -> None:
+        runtime, db = self.make_runtime()
+        db.upsert_team_names(["Team Alpha"])
+        db.set_competition_state(status="running", current_series=3)
+        runtime._run_compose_parallel = Mock()
+        runtime.poller.run_cycle = Mock()
+
+        runtime.start_competition()
+
+        # Guard short-circuited before any compose / poll ran.
+        runtime._run_compose_parallel.assert_not_called()
+        runtime.poller.run_cycle.assert_not_called()
+        # State is untouched.
+        state = db.get_competition()
+        self.assertEqual(state["status"], "running")
+        self.assertEqual(state["current_series"], 3)
+
+    def test_start_competition_is_silent_noop_from_each_non_stopped_state(self) -> None:
+        for status in ("starting", "running", "paused", "rotating", "faulted", "stopping"):
+            with self.subTest(status=status):
+                runtime, db = self.make_runtime()
+                db.upsert_team_names(["Team Alpha"])
+                db.set_competition_state(status=status, current_series=1)
+                runtime._run_compose_parallel = Mock()
+
+                runtime.start_competition()
+
+                runtime._run_compose_parallel.assert_not_called()
+                self.assertEqual(db.get_competition()["status"], status)
+
+    # ---- stop_competition -------------------------------------------------
+    def test_stop_competition_is_silent_noop_when_already_stopped(self) -> None:
+        runtime, db = self.make_runtime()
+        # Fresh DB starts stopped.
+        self.assertEqual(db.get_competition()["status"], "stopped")
+        runtime._run_compose_parallel = Mock()
+
+        runtime.stop_competition()
+
+        runtime._run_compose_parallel.assert_not_called()
+
+    # ---- pause_rotation ---------------------------------------------------
+    def test_pause_rotation_is_silent_noop_when_not_running(self) -> None:
+        for status in ("stopped", "paused", "rotating", "faulted", "stopping"):
+            with self.subTest(status=status):
+                runtime, db = self.make_runtime()
+                db.set_competition_state(status=status, current_series=1)
+                original_status = db.get_competition()["status"]
+
+                runtime.pause_rotation()
+
+                self.assertEqual(db.get_competition()["status"], original_status)
+
+    # ---- resume_rotation --------------------------------------------------
+    def test_resume_rotation_is_silent_noop_when_not_paused(self) -> None:
+        for status in ("stopped", "running", "rotating", "faulted", "stopping"):
+            with self.subTest(status=status):
+                runtime, db = self.make_runtime()
+                db.set_competition_state(status=status, current_series=1)
+                original_status = db.get_competition()["status"]
+
+                runtime.resume_rotation()
+
+                # State unchanged — guard short-circuits before any
+                # validation or deploy logic.
+                self.assertEqual(db.get_competition()["status"], original_status)
+
+    def test_resume_rotation_from_paused_with_no_series_raises(self) -> None:
+        runtime, db = self.make_runtime()
+        db.set_competition_state(status="paused", current_series=0)
+
+        with self.assertRaises(RuntimeGuardError):
+            runtime.resume_rotation()
+
+    # ---- rotate_to_series -------------------------------------------------
+    def test_rotate_to_series_below_one_is_silent_noop(self) -> None:
+        runtime, db = self.make_runtime()
+        db.upsert_team_names(["Team Alpha"])
+        db.set_competition_state(status="running", current_series=2)
+        runtime._run_compose_parallel = Mock()
+
+        for bad_series in (0, -1, -100):
+            with self.subTest(target=bad_series):
+                runtime.rotate_to_series(bad_series)
+                runtime._run_compose_parallel.assert_not_called()
+                self.assertEqual(db.get_competition()["current_series"], 2)
+
+    def test_rotate_to_series_above_total_is_silent_noop(self) -> None:
+        runtime, db = self.make_runtime()
+        db.upsert_team_names(["Team Alpha"])
+        db.set_competition_state(status="running", current_series=2)
+        runtime._run_compose_parallel = Mock()
+
+        runtime.rotate_to_series(SETTINGS.total_series + 1)
+
+        runtime._run_compose_parallel.assert_not_called()
+        self.assertEqual(db.get_competition()["current_series"], 2)
+
+    def test_rotate_to_series_accepts_boundary_total_series(self) -> None:
+        # target_series == SETTINGS.total_series is the inclusive upper
+        # bound; it must not be rejected.
+        runtime, db = self.make_runtime()
+        db.upsert_team_names(["Team Alpha"])
+        db.set_competition_state(status="running", current_series=1)
+        runtime.poll_once = Mock()
+        runtime._run_compose_parallel = Mock(side_effect=[{}, {}, {}])
+        runtime.poller.run_cycle = Mock(
+            return_value=(
+                [
+                    snapshot(node_host=host, variant=variant, king="unclaimed")
+                    for host in SETTINGS.node_hosts
+                    for variant in SETTINGS.variants
+                ],
+                {},
+            )
+        )
+
+        runtime.rotate_to_series(SETTINGS.total_series)
+
+        self.assertEqual(db.get_competition()["current_series"], SETTINGS.total_series)
+
+    # ---- recover_current_series ------------------------------------------
+    def test_recover_current_series_from_running_raises(self) -> None:
+        runtime, db = self.make_runtime()
+        db.set_competition_state(status="running", current_series=2)
+
+        with self.assertRaises(RuntimeGuardError, msg="paused or faulted"):
+            runtime.recover_current_series()
+
+    def test_recover_current_series_from_stopped_raises(self) -> None:
+        runtime, db = self.make_runtime()
+        # Fresh DB is in "stopped".
+        with self.assertRaises(RuntimeGuardError):
+            runtime.recover_current_series()
+
+    def test_recover_current_series_from_rotating_raises(self) -> None:
+        runtime, db = self.make_runtime()
+        db.set_competition_state(status="rotating", current_series=2)
+        with self.assertRaises(RuntimeGuardError):
+            runtime.recover_current_series()
+
+    def test_recover_current_series_from_stopping_raises(self) -> None:
+        runtime, db = self.make_runtime()
+        db.set_competition_state(status="stopping", current_series=2)
+        with self.assertRaises(RuntimeGuardError):
+            runtime.recover_current_series()
+
+    def test_recover_current_series_from_paused_with_no_series_raises(self) -> None:
+        runtime, db = self.make_runtime()
+        db.set_competition_state(status="paused", current_series=0)
+
+        with self.assertRaises(RuntimeGuardError):
+            runtime.recover_current_series()
