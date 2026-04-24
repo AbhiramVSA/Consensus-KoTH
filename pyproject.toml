@@ -52,18 +52,18 @@ markers = [
 # source       — only referee-server is in scope for the coverage gate; qa/
 #                scripts are operational probes, not unit-tested code.
 # branch       — branch coverage is more honest than line for a control plane.
-# fail_under   — Current total coverage is ~68%. Per-module coverage is
-#                already strong for the modules with direct unit tests:
-#                enforcer, webhook, models, runtime_logging at 100%; db at
-#                96%; ssh_client at 92%; scorer at 94%. The drag is app.py
-#                (43%, many admin routes untested) and scheduler.py (65%,
-#                god-class with untested lifecycle branches).
+# fail_under   — Current total coverage is ~72% after the edge-case pass.
+#                Per-module: enforcer / webhook / models / runtime_logging
+#                / scorer at 100%; config at 98%; db at 98%; ssh_client at
+#                95%; poller at 78%; scheduler at 67%; app at 45%. The last
+#                two remain the coverage drag and will move when the app.py
+#                split from docs/AUDIT.md lands and route-level tests go in.
 #
-#                fail_under = 65 is a don't-regress floor, not a ceiling.
-#                Raise it in lockstep as the app.py split from docs/AUDIT.md
-#                lands and the route-level tests go in. The 80% target from
-#                docs/TESTING_AUDIT.md item #5 is a medium-term goal, not a
-#                hard gate in this commit.
+#                fail_under = 70 is a don't-regress floor with ~2% headroom
+#                against random flakes in branch coverage counting. The 80%
+#                target from docs/TESTING_AUDIT.md item #5 remains the
+#                goal; this floor moves up as the app.py / scheduler.py
+#                splits land.
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
 branch = true
@@ -79,7 +79,7 @@ omit = [
 show_missing = true
 skip_covered = false
 precision = 1
-fail_under = 65
+fail_under = 70
 exclude_also = [
     "pragma: no cover",
     "raise NotImplementedError",
