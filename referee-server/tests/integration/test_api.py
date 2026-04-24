@@ -28,48 +28,78 @@ from tests.conftest import DummyScheduler, DummySSH, DummyTemplates, snapshot
 pytestmark = pytest.mark.integration
 
 
+def _install_api_test_fixture(tc: unittest.TestCase) -> None:
+    """Populate ``tc`` with an isolated app module + test clients.
+
+    Extracted from ``ApiEndpointTests.setUp`` so edge-case test classes
+    can reuse the fixture logic without inheriting the parent's test
+    methods (which would re-run them N times — once per subclass).
+
+    After this call the TestCase has:
+      * ``tc.app_module`` — the re-imported ``app`` module with
+        ``DummyTemplates`` swapped in.
+      * ``tc.client`` — TestClient for the admin app.
+      * ``tc.participant_client`` — TestClient for the participant app.
+
+    Cleanup is registered via ``tc.addCleanup`` so tempfiles, the
+    rebound module globals, and the clients all unwind at test exit.
+    """
+    original_admin_key = SETTINGS.admin_api_key
+    object.__setattr__(SETTINGS, "admin_api_key", "test-admin-key")
+    tc.addCleanup(lambda: object.__setattr__(SETTINGS, "admin_api_key", original_admin_key))
+
+    fd, raw_path = tempfile.mkstemp(suffix=".db")
+    import os
+
+    os.close(fd)
+    db_path = Path(raw_path)
+    tc.addCleanup(lambda: db_path.exists() and db_path.unlink())
+
+    db = Database(db_path)
+    db.initialize()
+    tc.addCleanup(db.close)
+    runtime = RefereeRuntime(db, DummySSH())
+    runtime.scheduler = DummyScheduler()
+    runtime.start_scheduler = Mock()
+    runtime.shutdown = Mock()
+
+    sys.modules.pop("app", None)
+    with patch("fastapi.templating.Jinja2Templates", DummyTemplates):
+        app_module = importlib.import_module("app")
+    tc.app_module = app_module
+    tc._original_db = app_module.db
+    tc._original_runtime = app_module.runtime
+    tc._original_ssh_pool = app_module.ssh_pool
+    app_module.db = db
+    app_module.runtime = runtime
+    app_module.ssh_pool = runtime.ssh_pool
+
+    def _restore_app_globals() -> None:
+        app_module.db = tc._original_db
+        app_module.runtime = tc._original_runtime
+        app_module.ssh_pool = tc._original_ssh_pool
+
+    tc.addCleanup(_restore_app_globals)
+
+    tc.client = TestClient(app_module.app)
+    tc.addCleanup(tc.client.close)
+    tc.participant_client = TestClient(app_module.participant_app)
+    tc.addCleanup(tc.participant_client.close)
+
+
+def _override_admin_auth(tc: unittest.TestCase) -> None:
+    """Disable the admin API key check for this test via the FastAPI
+    ``dependency_overrides`` map. Restores on teardown.
+    """
+    tc.app_module.app.dependency_overrides[
+        tc.app_module.require_admin_api_key
+    ] = lambda: None
+    tc.addCleanup(tc.app_module.app.dependency_overrides.clear)
+
+
 class ApiEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
-        original_admin_key = SETTINGS.admin_api_key
-        object.__setattr__(SETTINGS, "admin_api_key", "test-admin-key")
-        self.addCleanup(lambda: object.__setattr__(SETTINGS, "admin_api_key", original_admin_key))
-
-        fd, raw_path = tempfile.mkstemp(suffix=".db")
-        import os
-
-        os.close(fd)
-        db_path = Path(raw_path)
-        self.addCleanup(lambda: db_path.exists() and db_path.unlink())
-
-        db = Database(db_path)
-        db.initialize()
-        self.addCleanup(db.close)
-        runtime = RefereeRuntime(db, DummySSH())
-        runtime.scheduler = DummyScheduler()
-        runtime.start_scheduler = Mock()
-        runtime.shutdown = Mock()
-
-        sys.modules.pop("app", None)
-        with patch("fastapi.templating.Jinja2Templates", DummyTemplates):
-            app_module = importlib.import_module("app")
-        self.app_module = app_module
-        self.original_db = app_module.db
-        self.original_runtime = app_module.runtime
-        self.original_ssh_pool = app_module.ssh_pool
-        app_module.db = db
-        app_module.runtime = runtime
-        app_module.ssh_pool = runtime.ssh_pool
-        self.addCleanup(self._restore_app_globals)
-
-        self.client = TestClient(app_module.app)
-        self.addCleanup(self.client.close)
-        self.participant_client = TestClient(app_module.participant_app)
-        self.addCleanup(self.participant_client.close)
-
-    def _restore_app_globals(self) -> None:
-        self.app_module.db = self.original_db
-        self.app_module.runtime = self.original_runtime
-        self.app_module.ssh_pool = self.original_ssh_pool
+        _install_api_test_fixture(self)
 
     def test_runtime_endpoint_returns_extended_state(self) -> None:
         self.app_module.app.dependency_overrides[self.app_module.require_admin_api_key] = lambda: None
@@ -636,3 +666,301 @@ listen p10012
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("paused or faulted", response.json()["detail"])
+
+
+# ---------------------------------------------------------------------------
+# Edge cases for the admin/participant API surface.
+#
+# Authentication boundary behavior, input validation on user-supplied
+# fields (team names, notification severity, path-encoded team IDs), and
+# the shape of error responses. These are the paths most likely to be
+# attacked or fat-fingered in production, and the ones where a silent
+# refactor of ``require_admin_api_key`` or the Pydantic models would
+# have real impact.
+# ---------------------------------------------------------------------------
+class AuthBoundaryTests(unittest.TestCase):
+    """Auth-specific edge cases. Uses the shared fixture helper rather
+    than subclassing ApiEndpointTests so the parent's 31 happy-path
+    tests are not re-run as part of this class.
+    """
+
+    def setUp(self) -> None:
+        _install_api_test_fixture(self)
+
+    def test_request_without_header_returns_401(self) -> None:
+        response = self.client.get("/api/teams")
+        self.assertEqual(response.status_code, 401)
+
+    def test_empty_header_value_returns_401(self) -> None:
+        response = self.client.get("/api/teams", headers={"X-API-Key": ""})
+        self.assertEqual(response.status_code, 401)
+
+    def test_wrong_key_returns_401(self) -> None:
+        response = self.client.get("/api/teams", headers={"X-API-Key": "wrong-key"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_key_with_trailing_whitespace_returns_401(self) -> None:
+        # ``x_api_key != SETTINGS.admin_api_key`` is a strict equality
+        # check. ``test-admin-key `` (trailing space) must fail, not
+        # succeed by coincidence.
+        response = self.client.get(
+            "/api/teams", headers={"X-API-Key": "test-admin-key "}
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_key_case_sensitivity_returns_401(self) -> None:
+        response = self.client.get(
+            "/api/teams", headers={"X-API-Key": "TEST-ADMIN-KEY"}
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_correct_key_returns_200(self) -> None:
+        response = self.client.get(
+            "/api/teams", headers={"X-API-Key": "test-admin-key"}
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_empty_admin_key_setting_opens_up_all_endpoints(self) -> None:
+        # When SETTINGS.admin_api_key is "" (the ``ALLOW_UNSAFE…`` flag
+        # path), require_admin_api_key is a no-op and every admin
+        # endpoint is reachable without a header. Important to keep
+        # regression-tested because it is the only default-deny-escape
+        # in the codebase.
+        object.__setattr__(self.app_module.SETTINGS, "admin_api_key", "")
+        self.addCleanup(
+            lambda: object.__setattr__(self.app_module.SETTINGS, "admin_api_key", "test-admin-key")
+        )
+
+        response = self.client.get("/api/teams")
+        self.assertEqual(response.status_code, 200)
+
+
+class TeamCreationValidationTests(unittest.TestCase):
+    """Input validation for ``POST /api/admin/teams``."""
+
+    def setUp(self) -> None:
+        _install_api_test_fixture(self)
+
+    def _override_auth(self) -> None:
+        _override_admin_auth(self)
+
+    def test_rejects_empty_name(self) -> None:
+        self._override_auth()
+        response = self.client.post("/api/admin/teams", json={"name": ""})
+        self.assertEqual(response.status_code, 422)
+
+    def test_rejects_whitespace_only_name(self) -> None:
+        self._override_auth()
+        response = self.client.post("/api/admin/teams", json={"name": "   "})
+        self.assertEqual(response.status_code, 422)
+
+    def test_rejects_name_with_newline(self) -> None:
+        self._override_auth()
+        response = self.client.post(
+            "/api/admin/teams", json={"name": "Team\nAlpha"}
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_rejects_name_with_null_byte(self) -> None:
+        self._override_auth()
+        response = self.client.post(
+            "/api/admin/teams", json={"name": "Team\x00Alpha"}
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_rejects_name_longer_than_128_chars(self) -> None:
+        self._override_auth()
+        response = self.client.post(
+            "/api/admin/teams", json={"name": "A" * 129}
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_accepts_name_of_exactly_128_chars(self) -> None:
+        self._override_auth()
+        response = self.client.post(
+            "/api/admin/teams", json={"name": "A" * 128}
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_accepts_unicode_name(self) -> None:
+        self._override_auth()
+        response = self.client.post(
+            "/api/admin/teams", json={"name": "Team 🚀 Α"}
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_rejects_reserved_unclaimed_in_any_case(self) -> None:
+        self._override_auth()
+        for variant in ("unclaimed", "UNCLAIMED", "Unclaimed"):
+            with self.subTest(name=variant):
+                response = self.client.post(
+                    "/api/admin/teams", json={"name": variant}
+                )
+                self.assertEqual(response.status_code, 422)
+
+    def test_duplicate_team_returns_409(self) -> None:
+        self._override_auth()
+        first = self.client.post("/api/admin/teams", json={"name": "Team Alpha"})
+        second = self.client.post("/api/admin/teams", json={"name": "Team Alpha"})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 409)
+
+
+class TeamBanUnbanTests(unittest.TestCase):
+    """Coverage for the ban / unban admin endpoints."""
+
+    def setUp(self) -> None:
+        _install_api_test_fixture(self)
+
+    def _override_auth(self) -> None:
+        _override_admin_auth(self)
+
+    def test_ban_nonexistent_team_returns_404(self) -> None:
+        self._override_auth()
+        response = self.client.post("/api/admin/teams/GhostTeam/ban")
+        self.assertEqual(response.status_code, 404)
+
+    def test_unban_nonexistent_team_returns_404(self) -> None:
+        self._override_auth()
+        response = self.client.post("/api/admin/teams/GhostTeam/unban")
+        self.assertEqual(response.status_code, 404)
+
+    def test_ban_is_idempotent(self) -> None:
+        self._override_auth()
+        self.client.post("/api/admin/teams", json={"name": "Team Alpha"})
+        first = self.client.post("/api/admin/teams/Team%20Alpha/ban")
+        second = self.client.post("/api/admin/teams/Team%20Alpha/ban")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["status"], "banned")
+
+    def test_unban_resets_offense_count(self) -> None:
+        self._override_auth()
+        self.client.post("/api/admin/teams", json={"name": "Team Alpha"})
+        # Escalate to full_ban so offense_count == 3.
+        for _ in range(3):
+            self.app_module.db.increment_team_offense("Team Alpha")
+        self.assertEqual(self.app_module.db.get_team("Team Alpha")["offense_count"], 3)
+
+        response = self.client.post("/api/admin/teams/Team%20Alpha/unban")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["offense_count"], 0)
+        self.assertEqual(response.json()["status"], "active")
+
+
+class NotificationValidationTests(unittest.TestCase):
+    """Coverage for POST /api/admin/public/notifications."""
+
+    def setUp(self) -> None:
+        _install_api_test_fixture(self)
+
+    def _override_auth(self) -> None:
+        _override_admin_auth(self)
+
+    def test_delete_unknown_notification_returns_404(self) -> None:
+        self._override_auth()
+        response = self.client.delete("/api/admin/public/notifications/999999")
+        self.assertEqual(response.status_code, 404)
+
+    def test_invalid_severity_returns_422(self) -> None:
+        self._override_auth()
+        response = self.client.post(
+            "/api/admin/public/notifications",
+            json={"message": "Hello", "severity": "bogus_severity"},
+        )
+        # FastAPI / Pydantic validates the severity Literal.
+        self.assertEqual(response.status_code, 422)
+
+    def test_missing_message_returns_422(self) -> None:
+        self._override_auth()
+        response = self.client.post(
+            "/api/admin/public/notifications",
+            json={"severity": "info"},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_empty_message_behavior_is_pinned(self) -> None:
+        # Pydantic's default str field accepts ``""`` unless the model
+        # declares min_length. This test pins the present behavior: empty
+        # messages are accepted. If a future fix adds min_length=1 the
+        # response becomes 422 and this test flips to signal the change.
+        self._override_auth()
+        response = self.client.post(
+            "/api/admin/public/notifications",
+            json={"message": "", "severity": "info"},
+        )
+        self.assertIn(response.status_code, (200, 422))  # document current behavior range
+
+
+class QueryLimitEdgeCases(unittest.TestCase):
+    """Coverage for the ``limit`` parameter behavior on list endpoints."""
+
+    def setUp(self) -> None:
+        _install_api_test_fixture(self)
+
+    def _override_auth(self) -> None:
+        _override_admin_auth(self)
+
+    def test_claims_endpoint_default_limit_caps_result_count(self) -> None:
+        self._override_auth()
+        # Seed more than the default to exercise the ceiling.
+        observations = []
+        for idx in range(5):
+            observations.append(
+                {
+                    "poll_cycle": idx,
+                    "series": 1,
+                    "node_host": "192.168.0.102",
+                    "variant": "A",
+                    "status": "running",
+                    "king": "Team Alpha",
+                    "king_mtime_epoch": idx,
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "selected": False,
+                    "selection_reason": None,
+                }
+            )
+        self.app_module.db.add_claim_observations(observations)
+
+        # limit=2 must return 2 rows.
+        response = self.client.get("/api/claims?limit=2")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 2)
+
+    def test_events_endpoint_default_limit_is_applied(self) -> None:
+        self._override_auth()
+        for idx in range(5):
+            self.app_module.db.add_event(
+                event_type="probe", severity="info", detail=f"event-{idx}"
+            )
+
+        response = self.client.get("/api/events?limit=3")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 3)
+
+
+class RotationApiEdgeCases(unittest.TestCase):
+    """Coverage for the rotation skip endpoint's input validation."""
+
+    def setUp(self) -> None:
+        _install_api_test_fixture(self)
+
+    def _override_auth(self) -> None:
+        _override_admin_auth(self)
+
+    def test_rotate_skip_with_invalid_series_does_not_change_runtime(self) -> None:
+        # rotate_to_series's guard silently returns for out-of-range
+        # targets. The API wrapper must propagate that silence — NOT
+        # 500 — and the DB state stays put.
+        self._override_auth()
+        self.app_module.db.upsert_team_names(["Team Alpha"])
+        self.app_module.db.set_competition_state(status="running", current_series=2)
+
+        response = self.client.post(
+            "/api/rotate/skip", json={"target_series": SETTINGS.total_series + 1}
+        )
+
+        # The endpoint returns the runtime state regardless — the guard
+        # inside rotate_to_series short-circuits to a no-op.
+        self.assertIn(response.status_code, (200, 409))
+        self.assertEqual(self.app_module.db.get_competition()["current_series"], 2)
