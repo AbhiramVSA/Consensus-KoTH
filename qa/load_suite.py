@@ -31,7 +31,11 @@ def http_probe(host: str, target: Target, timeout: float) -> ProbeOutcome:
     started = time.perf_counter()
     status, body, _ = http_request(url, timeout=timeout, verify_tls=False)
     latency_ms = (time.perf_counter() - started) * 1000.0
-    ok = 200 <= status < 500 and len(body) >= 0
+    # The old check was ``200 <= status < 500 and len(body) >= 0``, where
+    # the second clause is always true (len() is never negative) and acted
+    # as dead weight. Require a non-empty body so a 200 with a truncated
+    # or empty payload is counted as a failure rather than a silent pass.
+    ok = 200 <= status < 500 and len(body) > 0
     return ProbeOutcome(ok, latency_ms, f"status={status}")
 
 

@@ -167,6 +167,13 @@ async def reporter(metrics: Metrics, interval: int, stop_event: asyncio.Event) -
 
 
 async def run(args: argparse.Namespace) -> int:
+    # Seed ``random`` at the very start of the run so think-time distributions
+    # and probe-payload selection are reproducible. An unseeded run produced
+    # different traffic on every invocation and made "why did this run fail
+    # and the last one pass?" essentially unanswerable.
+    seed = args.seed if args.seed is not None else random.SystemRandom().randint(0, 2**31 - 1)
+    random.seed(seed)
+
     if args.bucketed_ports:
         ports = build_bucket_ports(
             start=args.bucket_start,
@@ -177,6 +184,7 @@ async def run(args: argparse.Namespace) -> int:
         ports = parse_ports(args.ports)
 
     print(f"[config] target={args.target} users={args.users} duration={args.duration}s ports={len(ports)}")
+    print(f"[config] random seed={seed} (pass --seed {seed} to reproduce this run)")
     if args.bucketed_ports:
         print(
             "[config] bucketed ports enabled: "
@@ -277,6 +285,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="Print stats every N seconds.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Seed for the random number generator used to pick probes and "
+            "think times. If omitted, a non-deterministic seed is chosen "
+            "and logged so the run can be reproduced later with --seed."
+        ),
     )
     return parser
 

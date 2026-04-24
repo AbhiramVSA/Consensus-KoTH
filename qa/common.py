@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import asdict, dataclass, field, is_dataclass
 from http.cookiejar import CookieJar
 from typing import Any
@@ -73,7 +74,12 @@ def multipart_form_data(
     fields: dict[str, str],
     files: list[tuple[str, str, bytes, str]],
 ) -> tuple[bytes, str]:
-    boundary = f"----koth-qa-{int(time.time() * 1000)}"
+    # The boundary used to be ``f"----koth-qa-{int(time.time() * 1000)}"``,
+    # which meant two runs of the same probe produced different bytes even
+    # when the semantic request was identical. uuid4 gives us a collision-free
+    # boundary without a wall-clock dependency, so request bodies diff cleanly
+    # across runs and fixture recordings are reproducible.
+    boundary = f"----koth-qa-{uuid.uuid4().hex[:16]}"
     chunks: list[bytes] = []
     for key, value in fields.items():
         chunks.extend(

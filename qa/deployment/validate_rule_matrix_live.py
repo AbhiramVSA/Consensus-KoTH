@@ -626,7 +626,13 @@ class LiveValidator:
         )
 
     def representative_dangerous_tests(self) -> list[ValidationResult]:
-        service_probe_port = 55000 + int(time.time()) % 1000
+        # Pick an ephemeral port from a non-privileged range using os.urandom
+        # rather than the old ``55000 + int(time.time()) % 1000`` formula,
+        # which could collide with itself if two runs started within ~1000
+        # seconds on the same host. 49152-65535 is the IANA-reserved
+        # dynamic/private range, wide enough that accidental collisions are
+        # vanishingly unlikely even under CI retries.
+        service_probe_port = 49152 + int.from_bytes(os.urandom(2), "big") % (65535 - 49152 + 1)
         tests: list[ValidationResult] = []
         # H2A: all the direct /root/king.txt rules.
         tests.extend(
