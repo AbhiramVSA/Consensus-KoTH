@@ -392,5 +392,3 @@ __all__ = [
     "snapshot",
     "temporary_dotenv",
 ]
-
-_ = os  # noqa: PLR6104 - imported for future use in env-manipulating tests
