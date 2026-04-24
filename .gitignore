@@ -1,14 +1,194 @@
-__pycache__/
-*.pyc
-*.log
-.pytest_cache/
-.venv/
-referee-server/referee.db
-/referee.db
-.live-backups/
+# ---------------------------------------------------------------------------
+# Consensus KoTH — .gitignore
+#
+# Production-grade ignore list. Rules are grouped by intent so additions land
+# in the right section. The repository must remain publishable (no secrets,
+# no event-local state, no AI tooling artifacts, no build outputs).
+#
+# Principle: if a file is generated, host-specific, secret, AI-tool-specific,
+# or event-local, it does not belong in version control.
+# ---------------------------------------------------------------------------
+
+# ---- Secrets & environment ------------------------------------------------
 .env
-.DS_Store
-.idea/
-.vscode/
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+known_hosts
+*.secret
+secrets.*
+
+# ---- AI tooling (local-only, never commit) --------------------------------
+# Anthropic Claude Code
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.claudeignore
+# Cursor
+.cursor/
+.cursorignore
+.cursorrules
+# Aider
+.aider*
+# Codeium / Windsurf
+.codeium/
+.windsurf/
+# GitHub Copilot (workspace-level)
+.github/copilot-instructions.md
+.copilot/
+# Continue
+.continue/
+# Cline / Roo
+.clinerules
+.cline/
+.roo/
+# Generic agent rules
+AGENTS.md
+AGENT.md
+GEMINI.md
+.agents/
+.ai/
+# Editor/AI metadata
+.chatgpt/
+
+# ---- Python build / runtime artifacts -------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+sdist/
+MANIFEST
+*.manifest
+*.spec
+
+# ---- Virtual environments -------------------------------------------------
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# ---- Test / coverage / lint caches ----------------------------------------
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.hypothesis/
+nosetests.xml
+*.cover
+
+# ---- Jupyter / notebooks --------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ---- Node (present under Series H4 machines) ------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+.yarn/
+.parcel-cache/
+.next/
+.nuxt/
+dist-ssr/
+
+# ---- Databases, logs, runtime state ---------------------------------------
+*.log
+*.log.*
+logs/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+referee.db
+referee-server/referee.db
+
+# ---- Event / deployment / QA artifacts ------------------------------------
+.live-backups/
 qa/*-results.json
 qa/deployment/live-rule-validation-report.json
+qa/**/__pycache__/
+
+# ---- OS cruft -------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---- Editors & IDEs -------------------------------------------------------
+.idea/
+.vscode/
+.vs/
+*.swp
+*.swo
+*.swn
+*~
+.project
+.classpath
+.settings/
+.sublime-project
+.sublime-workspace
+.netrwhist
+.fleet/
+.zed/
+
+# ---- Docker / container runtime -------------------------------------------
+*.pid
+docker-compose.override.yml
+docker-compose.override.yaml
+.dockerignore.local
+
+# ---- Terraform / infra (in case infra-as-code is added) -------------------
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+
+# ---- Backups / temporary --------------------------------------------------
+*.bak
+*.backup
+*.orig
+*.rej
+*.tmp
+*.temp
+tmp/
+temp/
+
+# ---- Local scratch --------------------------------------------------------
+.scratch/
+scratch/
+NOTES.local.md
+TODO.local.md
