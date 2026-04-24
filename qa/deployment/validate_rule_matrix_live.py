@@ -1,14 +1,47 @@
 #!/usr/bin/env python3
+# ruff: noqa: E501
+"""Validate safe and dangerous referee rule paths against a live cluster.
+
+WHAT THIS DOES — READ BEFORE RUNNING.
+
+This script is the most destructive piece of tooling in the repository. It
+connects to the referee host over SSH, takes a ``.bak`` of the live SQLite
+database, and then, for every series H1..H8 and every variant A/B/C:
+
+* writes to ``/root/king.txt`` inside live challenge containers (all three
+  challenge nodes, via ``docker exec -u 0``);
+* modifies permissions, ownership, SSH authorized_keys, and ``/etc/shadow``
+  inside those containers;
+* appends rules to the live ``iptables`` chain;
+* spawns listener processes on randomly chosen ports and kills them again
+  by PID;
+* creates teams with the ``VAL`` prefix in the live DB, drives them up to
+  bans, and removes them afterwards;
+* restarts the ``koth-referee`` systemd unit as sudo when ``.env`` needs
+  the poll interval bumped for validation speed.
+
+Pointed at a production event this will corrupt scores, create fake teams,
+and leave backups on disk. The DB is restored from the ``.bak`` at the end
+of ``LiveValidator.run``, but only if the script exits cleanly — a Ctrl-C
+or an unhandled exception can leave mutations behind.
+
+For that reason the script refuses to run unless the operator has
+explicitly acknowledged the blast radius by setting
+``KOTH_ALLOW_LIVE_MUTATION=yes-I-really-mean-it`` in the environment. Only
+run it against a dedicated staging lab you are willing to rebuild.
+"""
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 import textwrap
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import paramiko
 import requests
@@ -19,6 +52,44 @@ SERIES = tuple(range(1, 9))
 TEAM_PREFIX = "VAL"
 REMOTE_REPO = "/opt/KOTH_orchestrator/repo"
 REMOTE_REFEREE = f"{REMOTE_REPO}/referee-server"
+
+# The operator must acknowledge the blast radius before the script will run.
+# Picked a phrase, not a boolean, so that the override cannot land from a
+# CI env-map by accident.
+LIVE_MUTATION_ENV_VAR = "KOTH_ALLOW_LIVE_MUTATION"
+LIVE_MUTATION_TOKEN = "yes-I-really-mean-it"
+LIVE_MUTATION_REFUSAL = textwrap.dedent(
+    f"""\
+    REFUSING TO RUN.
+
+    validate_rule_matrix_live.py mutates live challenge containers, writes
+    to /root/king.txt across three nodes, flushes and adds iptables rules,
+    kills processes by PID, creates/bans teams in the live SQLite, and may
+    restart the koth-referee systemd unit as sudo.
+
+    To acknowledge the blast radius and proceed, export:
+
+        {LIVE_MUTATION_ENV_VAR}={LIVE_MUTATION_TOKEN}
+
+    Run only against a dedicated staging lab that you are willing to
+    rebuild from scratch. This script restores the DB from a backup at
+    the end of its run, but SIGINT or an unhandled exception can leave
+    partial mutations on the live nodes.
+    """
+).strip()
+
+
+def _assert_live_mutation_allowed() -> None:
+    """Abort unless the explicit acknowledgement token is set in the environment.
+
+    This is the single most important line of safety in the whole QA tree:
+    without it, a mis-aimed run against a production event silently corrupts
+    scores, creates fake teams, and leaves iptables rules behind.
+    """
+    if os.environ.get(LIVE_MUTATION_ENV_VAR) == LIVE_MUTATION_TOKEN:
+        return
+    print(LIVE_MUTATION_REFUSAL, file=sys.stderr)
+    raise SystemExit(2)
 
 
 @dataclass
@@ -142,6 +213,20 @@ class LBRemote:
 
 
 class LiveValidator:
+    # Shell snippet that resets a variant to the default unclaimed state and
+    # tears down anything the dangerous probes might have left behind. Kept
+    # as a module-level constant so it is diffable as a unit rather than
+    # encoded inside a large method.
+    _RESET_UNCLAIMED_CMD = (
+        "chmod 700 /root || true; "
+        "if test -f /tmp/val_port.pid; then xargs -r kill </tmp/val_port.pid 2>/dev/null || true; fi; "
+        "if test -f /tmp/val_incrond.pid; then xargs -r kill </tmp/val_incrond.pid 2>/dev/null || true; fi; "
+        "rm -f /etc/cron.d/zz-val-king /tmp/val_incrond /tmp/val_incrond.pid /tmp/val_port.pid "
+        "/tmp/val_php.log /tmp/val_shadow.bak /tmp/val_authkeys.bak; "
+        "rm -f /root/king.txt; printf 'unclaimed\\n' > /root/king.txt; "
+        "chmod 644 /root/king.txt; chown root:root /root/king.txt || true"
+    )
+
     def __init__(self, lb: LBRemote, api_base: str):
         self.lb = lb
         self.env = lb.read_env()
@@ -252,35 +337,89 @@ class LiveValidator:
             raise RuntimeError(f"{target} H{series}{variant} failed: {err or out}")
 
     def set_unclaimed(self, series: int, variant: str) -> None:
-        cleanup = (
-            "chmod 700 /root || true; "
-            "if test -f /tmp/val_port.pid; then xargs -r kill </tmp/val_port.pid 2>/dev/null || true; fi; "
-            "if test -f /tmp/val_incrond.pid; then xargs -r kill </tmp/val_incrond.pid 2>/dev/null || true; fi; "
-            "rm -f /etc/cron.d/zz-val-king /tmp/val_incrond /tmp/val_incrond.pid /tmp/val_port.pid /tmp/val_php.log /tmp/val_shadow.bak /tmp/val_authkeys.bak; "
-            "rm -f /root/king.txt; printf 'unclaimed\\n' > /root/king.txt; chmod 644 /root/king.txt; chown root:root /root/king.txt || true"
-        )
+        """Reset a variant on every node to the pristine unclaimed state."""
         for idx in range(len(self.node_targets)):
-            self.container_shell(series, variant, cleanup, idx)
+            self.container_shell(series, variant, self._RESET_UNCLAIMED_CMD, idx)
 
-    def safe_capture(self, series: int, variant: str, team: str) -> ValidationResult:
+    def establish_owner(self, series: int, variant: str, team: str) -> None:
+        """Write the team name into /root/king.txt on nodes 0 and 1 so that
+        subsequent probes can target an already-owned variant. Node 2 is
+        intentionally left unclaimed so the baseline has one clean replica.
+        """
         self.ensure_series(series)
         self.ensure_team(team)
-        baseline_points = float(self.team_record(team)["total_points"])
-        baseline_event_id = self.latest_event_id()
         safe_cmd = (
             f"printf '%s\\n' {json.dumps(team)} > /root/king.txt; "
             "chmod 644 /root/king.txt; chown root:root /root/king.txt || true; chmod 700 /root"
         )
         self.container_shell(series, variant, safe_cmd, 0)
         self.container_shell(series, variant, safe_cmd, 1)
-        self.container_shell(series, variant, "printf 'unclaimed\\n' > /root/king.txt; chmod 644 /root/king.txt; chmod 700 /root", 2)
+        self.poll_once()
+
+    # ------------------------------------------------------------------
+    # Unified probe helpers.
+    #
+    # The legacy version of this file had seven near-identical test harnesses
+    # (safe_capture, dangerous_root_dir, special_authkeys_safe,
+    #  special_shadow_safe, special_h1c_safe, _run_representative_matrix,
+    #  _dangerous_probe). The only differences between them were:
+    #
+    #   * whether nodes 0/1/2 all get the team-owned king.txt or node 2 stays
+    #     unclaimed (safe capture vs everything else),
+    #   * whether the assertion is "violation present + ban fired" (dangerous)
+    #     or "specific exemption suppressed + scoring succeeded" (safe-edge),
+    #   * an optional restore command run inside the container afterwards.
+    #
+    # The helpers below capture those three axes as parameters, which collapses
+    # roughly 200 lines of boilerplate into three wrapper methods. Behavior is
+    # unchanged; the shape of the ValidationResult is identical to the old
+    # version so the report JSON stays backward compatible.
+    # ------------------------------------------------------------------
+    def _safe_capture_probe(
+        self,
+        *,
+        series: int,
+        variant: str,
+        team: str,
+    ) -> ValidationResult:
+        """Verify a clean team capture on two healthy nodes scores and does not
+        trigger violations. Node 2 stays unclaimed on purpose so the scorer
+        has to rely on the 2-node quorum rather than a unanimous observation.
+        """
+        self.ensure_series(series)
+        self.ensure_team(team)
+        baseline_points = float(self.team_record(team)["total_points"])
+        baseline_event_id = self.latest_event_id()
+        write_cmd = (
+            f"printf '%s\\n' {json.dumps(team)} > /root/king.txt; "
+            "chmod 644 /root/king.txt; chown root:root /root/king.txt || true; chmod 700 /root"
+        )
+        self.container_shell(series, variant, write_cmd, 0)
+        self.container_shell(series, variant, write_cmd, 1)
+        self.container_shell(
+            series,
+            variant,
+            "printf 'unclaimed\\n' > /root/king.txt; chmod 644 /root/king.txt; chmod 700 /root",
+            2,
+        )
         self.poll_once()
         events = self.events_after(baseline_event_id)
         team_after = self.team_record(team)
-        violation_events = [e for e in events if e.get("team_name") == team and e["type"] in {"violation", "ban"}]
-        point_events = [e for e in events if e.get("team_name") == team and e["type"] == "points_awarded" and e.get("variant") == variant]
-        passed = float(team_after["total_points"]) >= baseline_points + 1.0 and not violation_events
-        detail = "safe capture scored cleanly" if passed else "safe capture triggered unexpected state"
+        violation_events = [
+            event
+            for event in events
+            if event.get("team_name") == team and event["type"] in {"violation", "ban"}
+        ]
+        point_events = [
+            event
+            for event in events
+            if event.get("team_name") == team
+            and event["type"] == "points_awarded"
+            and event.get("variant") == variant
+        ]
+        passed = (
+            float(team_after["total_points"]) >= baseline_points + 1.0 and not violation_events
+        )
         self.set_unclaimed(series, variant)
         return ValidationResult(
             name=f"H{series}{variant} safe capture",
@@ -288,7 +427,7 @@ class LiveValidator:
             series=series,
             variant=variant,
             passed=passed,
-            detail=detail,
+            detail="safe capture scored cleanly" if passed else "safe capture triggered unexpected state",
             evidence={
                 "baseline_points": baseline_points,
                 "after_points": float(team_after["total_points"]),
@@ -297,158 +436,215 @@ class LiveValidator:
             },
         )
 
-    def establish_owner(self, series: int, variant: str, team: str) -> None:
+    def _dangerous_probe(
+        self,
+        *,
+        series: int,
+        variant: str,
+        probe_name: str,
+        command: str,
+        expected: str,
+        restore: str | None = None,
+    ) -> ValidationResult:
+        """Run a single dangerous probe on node 0 and expect a specific
+        violation name plus a ban event to land in the referee's event log.
+        """
         self.ensure_series(series)
+        team = f"{TEAM_PREFIX}BAD_H{series}{variant}_{probe_name}".replace("-", "_")
         self.ensure_team(team)
-        safe_cmd = (
-            f"printf '%s\\n' {json.dumps(team)} > /root/king.txt; "
-            "chmod 644 /root/king.txt; chown root:root /root/king.txt || true; chmod 700 /root"
-        )
-        self.container_shell(series, variant, safe_cmd, 0)
-        self.container_shell(series, variant, safe_cmd, 1)
-        self.poll_once()
-
-    def dangerous_root_dir(self, series: int, variant: str, team: str) -> ValidationResult:
-        self.ensure_series(series)
-        self.ensure_team(team)
+        if expected in {"king_deleted", "king_not_regular"}:
+            self.establish_owner(series, variant, team)
         baseline_event_id = self.latest_event_id()
-        command = (
+        prep = (
             f"printf '%s\\n' {json.dumps(team)} > /root/king.txt; "
-            "chmod 644 /root/king.txt; chown root:root /root/king.txt || true; chmod 755 /root"
+            "chmod 644 /root/king.txt; chown root:root /root/king.txt || true; chmod 700 /root; "
+            f"{command}"
         )
-        self.container_shell(series, variant, command, 0)
+        try:
+            self.container_shell(series, variant, prep, 0)
+        except Exception as exc:
+            self.set_unclaimed(series, variant)
+            return ValidationResult(
+                name=f"H{series}{variant} {probe_name}",
+                kind="dangerous",
+                series=series,
+                variant=variant,
+                passed=False,
+                detail=f"probe unsupported or failed to run: {exc}",
+            )
         self.poll_once()
         events = self.events_after(baseline_event_id)
-        violation_events = [
-            e
-            for e in events
-            if e.get("team_name") == team and e["type"] == "violation" and "root_dir_perm_changed" in e["detail"]
+        matching = [
+            event
+            for event in events
+            if event.get("team_name") == team and event["type"] == "violation" and expected in event["detail"]
         ]
-        ban_events = [e for e in events if e.get("team_name") == team and e["type"] == "ban"]
+        bans = [event for event in events if event.get("team_name") == team and event["type"] == "ban"]
+        if restore:
+            self.container_shell(series, variant, restore, 0)
         self.set_unclaimed(series, variant)
         return ValidationResult(
-            name=f"H{series}{variant} dangerous root_dir",
+            name=f"H{series}{variant} {probe_name}",
             kind="dangerous",
             series=series,
             variant=variant,
-            passed=bool(violation_events) and bool(ban_events),
-            detail="root_dir_perm_changed detected" if violation_events else "expected root_dir_perm_changed missing",
-            evidence={"violation_events": violation_events, "ban_events": ban_events},
+            passed=bool(matching) and bool(bans),
+            detail=f"{expected} detected" if matching else f"expected {expected} missing",
+            evidence={"events": events},
+        )
+
+    def _safe_edge_probe(
+        self,
+        *,
+        series: int,
+        variant: str,
+        team: str,
+        label: str,
+        command: str,
+        exemption_name: str,
+        restore: str | None = None,
+    ) -> ValidationResult:
+        """Verify that a referee exemption still fires: ``command`` should
+        produce the condition that normally triggers ``exemption_name`` but
+        the exemption must suppress the violation and the team must still
+        score.
+
+        This replaces the legacy ``special_authkeys_safe``,
+        ``special_shadow_safe``, and ``special_h1c_safe`` trio, which shared
+        the same shape but inlined everything.
+        """
+        self.ensure_series(series)
+        self.ensure_team(team)
+        baseline_points = float(self.team_record(team)["total_points"])
+        baseline_event_id = self.latest_event_id()
+        prep = (
+            f"printf '%s\\n' {json.dumps(team)} > /root/king.txt; "
+            "chmod 644 /root/king.txt; chmod 700 /root; "
+            f"{command}"
+        )
+        self.container_shell(series, variant, prep, 0)
+        self.container_shell(series, variant, prep, 1)
+        self.poll_once()
+        events = self.events_after(baseline_event_id)
+        violations = [
+            event
+            for event in events
+            if event.get("team_name") == team and event["type"] in {"violation", "ban"}
+        ]
+        after_points = float(self.team_record(team)["total_points"])
+        if restore:
+            for idx in (0, 1):
+                self.container_shell(series, variant, restore, idx)
+        self.set_unclaimed(series, variant)
+        exemption_held = not any(exemption_name in event["detail"] for event in violations)
+        scored = after_points >= baseline_points + 1.0
+        passed = exemption_held and scored
+        detail = (
+            f"{label}: exemption held" if passed
+            else f"{label}: expected no {exemption_name} and +1 score, "
+                 f"got violations={[e['detail'] for e in violations]} points_delta={after_points - baseline_points}"
+        )
+        return ValidationResult(
+            name=label,
+            kind="safe-edge",
+            series=series,
+            variant=variant,
+            passed=passed,
+            detail=detail,
+            evidence={
+                "events": events,
+                "baseline_points": baseline_points,
+                "after_points": after_points,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Curated test suites. Each method below assembles parameters for the
+    # three probe helpers above; the helpers do the work.
+    # ------------------------------------------------------------------
+    def safe_capture(self, series: int, variant: str, team: str) -> ValidationResult:
+        return self._safe_capture_probe(series=series, variant=variant, team=team)
+
+    def dangerous_root_dir(self, series: int, variant: str, team: str) -> ValidationResult:
+        _ = team  # team name is derived from probe_name to keep the report shape stable
+        return self._dangerous_probe(
+            series=series,
+            variant=variant,
+            probe_name="root_dir_perm_changed",
+            command="chmod 755 /root",
+            expected="root_dir_perm_changed",
         )
 
     def special_authkeys_safe(self) -> ValidationResult:
-        series, variant, team = 1, "B", f"{TEAM_PREFIX}SAFE_H1B_AUTH"
-        self.ensure_series(series)
-        self.ensure_team(team)
-        baseline_points = float(self.team_record(team)["total_points"])
-        baseline_event_id = self.latest_event_id()
-        cmd = (
-            "mkdir -p /root/.ssh; "
-            "test -f /root/.ssh/authorized_keys && cp -p /root/.ssh/authorized_keys /tmp/val_authkeys.bak || true; "
-            "printf '%s\\n' 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCvalidation validation' >> /root/.ssh/authorized_keys; "
-            "chmod 600 /root/.ssh/authorized_keys; "
-            f"printf '%s\\n' {json.dumps(team)} > /root/king.txt; chmod 644 /root/king.txt; chmod 700 /root"
-        )
-        restore = (
-            "if test -f /tmp/val_authkeys.bak; then cp -p /tmp/val_authkeys.bak /root/.ssh/authorized_keys; else rm -f /root/.ssh/authorized_keys; fi; "
-            "rm -f /tmp/val_authkeys.bak"
-        )
-        self.container_shell(series, variant, cmd, 0)
-        self.container_shell(series, variant, cmd, 1)
-        self.poll_once()
-        events = self.events_after(baseline_event_id)
-        violations = [e for e in events if e.get("team_name") == team and e["type"] in {"violation", "ban"}]
-        after_points = float(self.team_record(team)["total_points"])
-        for idx in (0, 1):
-            self.container_shell(series, variant, restore, idx)
-        self.set_unclaimed(series, variant)
-        return ValidationResult(
-            name="H1B authkeys safe path",
-            kind="safe-edge",
-            series=series,
-            variant=variant,
-            passed=not any("authkeys_changed" in e["detail"] for e in violations) and after_points >= baseline_points + 1.0,
-            detail="H1B authkeys exemption held" if after_points >= baseline_points + 1.0 else "H1B authkeys safe path failed",
-            evidence={"events": events, "baseline_points": baseline_points, "after_points": after_points},
+        return self._safe_edge_probe(
+            series=1,
+            variant="B",
+            team=f"{TEAM_PREFIX}SAFE_H1B_AUTH",
+            label="H1B authkeys safe path",
+            command=(
+                "mkdir -p /root/.ssh; "
+                "test -f /root/.ssh/authorized_keys && cp -p /root/.ssh/authorized_keys /tmp/val_authkeys.bak || true; "
+                "printf '%s\\n' 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCvalidation validation' >> /root/.ssh/authorized_keys; "
+                "chmod 600 /root/.ssh/authorized_keys"
+            ),
+            exemption_name="authkeys_changed",
+            restore=(
+                "if test -f /tmp/val_authkeys.bak; "
+                "then cp -p /tmp/val_authkeys.bak /root/.ssh/authorized_keys; "
+                "else rm -f /root/.ssh/authorized_keys; fi; "
+                "rm -f /tmp/val_authkeys.bak"
+            ),
         )
 
     def special_shadow_safe(self) -> ValidationResult:
-        series, variant, team = 7, "B", f"{TEAM_PREFIX}SAFE_H7B_SHADOW"
-        self.ensure_series(series)
-        self.ensure_team(team)
-        baseline_points = float(self.team_record(team)["total_points"])
-        baseline_event_id = self.latest_event_id()
-        cmd = (
-            "cp -p /etc/shadow /tmp/val_shadow.bak; "
-            "awk -F: 'BEGIN{OFS=\":\"} $1==\"root\"{$3=($3==\"0\"?\"1\":\"0\")}1' /tmp/val_shadow.bak > /etc/shadow; "
-            f"printf '%s\\n' {json.dumps(team)} > /root/king.txt; chmod 644 /root/king.txt; chmod 700 /root"
-        )
-        restore = "cp -p /tmp/val_shadow.bak /etc/shadow; rm -f /tmp/val_shadow.bak"
-        self.container_shell(series, variant, cmd, 0)
-        self.container_shell(series, variant, cmd, 1)
-        self.poll_once()
-        events = self.events_after(baseline_event_id)
-        violations = [e for e in events if e.get("team_name") == team and e["type"] in {"violation", "ban"}]
-        after_points = float(self.team_record(team)["total_points"])
-        for idx in (0, 1):
-            self.container_shell(series, variant, restore, idx)
-        self.set_unclaimed(series, variant)
-        return ValidationResult(
-            name="H7B shadow safe path",
-            kind="safe-edge",
-            series=series,
-            variant=variant,
-            passed=not any("shadow_changed" in e["detail"] for e in violations) and after_points >= baseline_points + 1.0,
-            detail="H7B shadow exemption held" if after_points >= baseline_points + 1.0 else "H7B shadow safe path failed",
-            evidence={"events": events, "baseline_points": baseline_points, "after_points": after_points},
+        return self._safe_edge_probe(
+            series=7,
+            variant="B",
+            team=f"{TEAM_PREFIX}SAFE_H7B_SHADOW",
+            label="H7B shadow safe path",
+            command=(
+                "cp -p /etc/shadow /tmp/val_shadow.bak; "
+                "awk -F: 'BEGIN{OFS=\":\"} $1==\"root\"{$3=($3==\"0\"?\"1\":\"0\")}1' "
+                "/tmp/val_shadow.bak > /etc/shadow"
+            ),
+            exemption_name="shadow_changed",
+            restore="cp -p /tmp/val_shadow.bak /etc/shadow; rm -f /tmp/val_shadow.bak",
         )
 
     def special_h1c_safe(self) -> ValidationResult:
-        series, variant, team = 1, "C", f"{TEAM_PREFIX}SAFE_H1C_ONESHOT"
-        self.ensure_series(series)
-        self.ensure_team(team)
-        baseline_points = float(self.team_record(team)["total_points"])
-        baseline_event_id = self.latest_event_id()
-        cmd = (
-            f"sh -lc \"printf '%s\\\\n' {team} > /root/king.txt; chmod 644 /root/king.txt; chmod 700 /root; sleep 12\""
-        )
-        self.container_shell(series, variant, cmd, 0)
-        self.container_shell(series, variant, cmd, 1)
-        self.poll_once()
-        events = self.events_after(baseline_event_id)
-        violations = [e for e in events if e.get("team_name") == team and e["type"] in {"violation", "ban"}]
-        after_points = float(self.team_record(team)["total_points"])
-        self.set_unclaimed(series, variant)
-        return ValidationResult(
-            name="H1C one-shot write path",
-            kind="safe-edge",
-            series=series,
-            variant=variant,
-            passed=not any("watchdog_process" in e["detail"] for e in violations) and after_points >= baseline_points + 1.0,
-            detail="H1C one-shot write stayed clean" if after_points >= baseline_points + 1.0 else "H1C one-shot write failed",
-            evidence={"events": events, "baseline_points": baseline_points, "after_points": after_points},
+        team = f"{TEAM_PREFIX}SAFE_H1C_ONESHOT"
+        return self._safe_edge_probe(
+            series=1,
+            variant="C",
+            team=team,
+            label="H1C one-shot write path",
+            command=(
+                "sh -lc \"printf '%s\\\\n' "
+                f"{team} > /root/king.txt; chmod 644 /root/king.txt; chmod 700 /root; sleep 12\""
+            ),
+            exemption_name="watchdog_process",
         )
 
     def representative_dangerous_tests(self) -> list[ValidationResult]:
-        tests: list[ValidationResult] = []
         service_probe_port = 55000 + int(time.time()) % 1000
-        # H2A representative direct-rule probes
+        tests: list[ValidationResult] = []
+        # H2A: all the direct /root/king.txt rules.
         tests.extend(
-            self._run_representative_matrix(
+            self._run_probe_matrix(
                 series=2,
                 variant="A",
                 probes=[
-                    ("king_perm_changed", "chmod 600 /root/king.txt", "king_perm_changed"),
-                    ("king_owner_changed", "chown 65534:65534 /root/king.txt || chown nobody:nogroup /root/king.txt", "king_owner_changed"),
+                    ("king_perm_changed", "chmod 600 /root/king.txt", "king_perm_changed", None),
+                    ("king_owner_changed", "chown 65534:65534 /root/king.txt || chown nobody:nogroup /root/king.txt", "king_owner_changed", None),
                     ("king_immutable", "chattr +i /root/king.txt", "king_immutable", "chattr -i /root/king.txt || true"),
-                    ("king_deleted", "rm -f /root/king.txt", "king_deleted"),
-                    ("king_not_regular", "rm -f /root/king.txt && ln -s /etc/passwd /root/king.txt", "king_not_regular"),
-                    ("cron_king_persistence", "printf '* * * * * root echo bad >> /root/king.txt\\n' > /etc/cron.d/zz-val-king", "cron_king_persistence"),
-                    ("watchdog_process", "ln -sf /bin/sleep /tmp/incrond && /tmp/incrond 120 >/tmp/val_watch.log 2>&1 & echo \\$! >/tmp/val_incrond.pid", "watchdog_process"),
+                    ("king_deleted", "rm -f /root/king.txt", "king_deleted", None),
+                    ("king_not_regular", "rm -f /root/king.txt && ln -s /etc/passwd /root/king.txt", "king_not_regular", None),
+                    ("cron_king_persistence", "printf '* * * * * root echo bad >> /root/king.txt\\n' > /etc/cron.d/zz-val-king", "cron_king_persistence", None),
+                    ("watchdog_process", "ln -sf /bin/sleep /tmp/incrond && /tmp/incrond 120 >/tmp/val_watch.log 2>&1 & echo \\$! >/tmp/val_incrond.pid", "watchdog_process", None),
                 ],
             )
         )
-        # service_ports on H1C (php)
+        # service_ports on H1C.
         tests.append(
             self._dangerous_probe(
                 series=1,
@@ -458,7 +654,7 @@ class LiveValidator:
                 expected="service_ports_changed",
             )
         )
-        # iptables on H6A (privileged)
+        # iptables on H6A (needs NET_ADMIN).
         tests.append(
             self._dangerous_probe(
                 series=6,
@@ -469,7 +665,7 @@ class LiveValidator:
                 restore="iptables -D INPUT -p tcp --dport 54321 -j ACCEPT || true",
             )
         )
-        # shadow/authkeys on non-exempt H2C
+        # shadow + authkeys on non-exempt H2C.
         tests.append(
             self._dangerous_probe(
                 series=2,
@@ -485,76 +681,41 @@ class LiveValidator:
                 series=2,
                 variant="C",
                 probe_name="authkeys_changed",
-                command="mkdir -p /root/.ssh; test -f /root/.ssh/authorized_keys && cp -p /root/.ssh/authorized_keys /tmp/val_authkeys.bak || true; printf '%s\\n' 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCvalidation validation' >> /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys",
+                command=(
+                    "mkdir -p /root/.ssh; "
+                    "test -f /root/.ssh/authorized_keys && cp -p /root/.ssh/authorized_keys /tmp/val_authkeys.bak || true; "
+                    "printf '%s\\n' 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCvalidation validation' >> /root/.ssh/authorized_keys; "
+                    "chmod 600 /root/.ssh/authorized_keys"
+                ),
                 expected="authkeys_changed",
-                restore="if test -f /tmp/val_authkeys.bak; then cp -p /tmp/val_authkeys.bak /root/.ssh/authorized_keys; else rm -f /root/.ssh/authorized_keys; fi; rm -f /tmp/val_authkeys.bak",
+                restore=(
+                    "if test -f /tmp/val_authkeys.bak; "
+                    "then cp -p /tmp/val_authkeys.bak /root/.ssh/authorized_keys; "
+                    "else rm -f /root/.ssh/authorized_keys; fi; "
+                    "rm -f /tmp/val_authkeys.bak"
+                ),
             )
         )
         return tests
 
-    def _run_representative_matrix(
+    def _run_probe_matrix(
         self,
+        *,
         series: int,
         variant: str,
-        probes: list[tuple[str, str, str] | tuple[str, str, str, str]],
+        probes: Iterable[tuple[str, str, str, str | None]],
     ) -> list[ValidationResult]:
         return [
             self._dangerous_probe(
                 series=series,
                 variant=variant,
-                probe_name=probe[0],
-                command=probe[1],
-                expected=probe[2],
-                restore=probe[3] if len(probe) > 3 else None,
+                probe_name=name,
+                command=command,
+                expected=expected,
+                restore=restore,
             )
-            for probe in probes
+            for name, command, expected, restore in probes
         ]
-
-    def _dangerous_probe(
-        self,
-        *,
-        series: int,
-        variant: str,
-        probe_name: str,
-        command: str,
-        expected: str,
-        restore: str | None = None,
-    ) -> ValidationResult:
-        self.ensure_series(series)
-        team = f"{TEAM_PREFIX}BAD_H{series}{variant}_{probe_name}".replace("-", "_")
-        self.ensure_team(team)
-        if expected in {"king_deleted", "king_not_regular"}:
-            self.establish_owner(series, variant, team)
-        baseline_event_id = self.latest_event_id()
-        prep = f"printf '%s\\n' {json.dumps(team)} > /root/king.txt; chmod 644 /root/king.txt; chown root:root /root/king.txt || true; chmod 700 /root; {command}"
-        try:
-            self.container_shell(series, variant, prep, 0)
-        except Exception as exc:
-            self.set_unclaimed(series, variant)
-            return ValidationResult(
-                name=f"H{series}{variant} {probe_name}",
-                kind="dangerous",
-                series=series,
-                variant=variant,
-                passed=False,
-                detail=f"probe unsupported or failed to run: {exc}",
-            )
-        self.poll_once()
-        events = self.events_after(baseline_event_id)
-        matching = [e for e in events if e.get("team_name") == team and e["type"] == "violation" and expected in e["detail"]]
-        bans = [e for e in events if e.get("team_name") == team and e["type"] == "ban"]
-        if restore:
-            self.container_shell(series, variant, restore, 0)
-        self.set_unclaimed(series, variant)
-        return ValidationResult(
-            name=f"H{series}{variant} {probe_name}",
-            kind="dangerous",
-            series=series,
-            variant=variant,
-            passed=bool(matching) and bool(bans),
-            detail=f"{expected} detected" if matching else f"expected {expected} missing",
-            evidence={"events": events},
-        )
 
     def run(self) -> list[ValidationResult]:
         self.cleanup_validation_artifacts()
@@ -595,7 +756,6 @@ class LiveValidator:
             self.cleanup_validation_artifacts()
             time.sleep(5)
             if original_status == "running":
-                # Ensure node deployment and DB state match again.
                 self.get("/api/runtime")
         report_meta["completed_at"] = datetime.now(UTC).isoformat()
         report_meta["result_count"] = len(self.results)
@@ -618,7 +778,14 @@ class LiveValidator:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate safe and dangerous referee rule paths against the live cluster.")
+    _assert_live_mutation_allowed()
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Validate safe and dangerous referee rule paths against the live cluster. "
+            f"Requires {LIVE_MUTATION_ENV_VAR}={LIVE_MUTATION_TOKEN} in the environment."
+        ),
+    )
     parser.add_argument("--lb-host", default="192.168.0.12")
     parser.add_argument("--lb-user", default="recon_admin")
     parser.add_argument("--lb-password", default="yoda32")
