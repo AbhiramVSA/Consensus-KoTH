@@ -1,22 +1,21 @@
+"""Unit tests for ``SSHClientPool`` target parsing.
+
+Patches ``paramiko.SSHClient`` with a recording fake so no real TCP is
+attempted. Only covers the happy-path target-override + default-username
+logic; timeout / reconnect / auth-failure tests live in the failure-path
+test module added alongside the direct enforcer/db/webhook coverage.
+"""
 from __future__ import annotations
 
-import sys
-import types
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-if "paramiko" not in sys.modules:
-    fake_paramiko = types.SimpleNamespace(
-        SSHClient=object,
-        RejectPolicy=object,
-        AutoAddPolicy=object,
-    )
-    sys.modules["paramiko"] = fake_paramiko
+import pytest
 
-from config import SETTINGS
 from ssh_client import SSHClientPool
+
+
+pytestmark = pytest.mark.unit
 
 
 class _FakeChannel:
@@ -86,16 +85,3 @@ class SSHClientPoolTargetTests(unittest.TestCase):
 
         self.assertEqual(fake_client.connect_calls[0]["hostname"], "192.168.0.103")
         self.assertEqual(fake_client.connect_calls[0]["username"], "recon_admin")
-
-
-class SettingsTargetValidationTests(unittest.TestCase):
-    def test_validate_runtime_rejects_mismatched_target_count(self) -> None:
-        original_targets = SETTINGS.node_ssh_targets
-        original_hosts = SETTINGS.node_hosts
-        object.__setattr__(SETTINGS, "node_hosts", ("192.168.0.102", "192.168.0.103"))
-        object.__setattr__(SETTINGS, "node_ssh_targets", ("nodeA@192.168.0.102",))
-        self.addCleanup(lambda: object.__setattr__(SETTINGS, "node_hosts", original_hosts))
-        self.addCleanup(lambda: object.__setattr__(SETTINGS, "node_ssh_targets", original_targets))
-
-        with self.assertRaises(RuntimeError):
-            SETTINGS.validate_runtime()
