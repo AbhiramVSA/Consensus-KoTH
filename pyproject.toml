@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# ---------------------------------------------------------------------------
+# This project is run directly from source; there is no wheel. The [project]
+# table exists only so tooling (ruff, mypy, coverage) has a canonical home.
+# ---------------------------------------------------------------------------
+[project]
+name = "consensus-koth"
+version = "0.1.0"
+description = "Distributed King of the Hill cyber range with a quorum-based referee."
+readme = "README.md"
+requires-python = ">=3.12"
+
+# ---------------------------------------------------------------------------
+# pytest
+#
+# testpaths    — the referee test tree is the authoritative suite.
+# addopts      — strict markers and config catch typos in test names/options.
+# xfail_strict — a passing xfail should be surfaced as a failure so expected
+#                failures that silently start passing do not become noise.
+# markers      — chaos tests are deselected by default; CI nightly can opt in
+#                with `pytest -m chaos`.
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["referee-server/tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+xfail_strict = true
+markers = [
+    "unit: fast, hermetic tests with no disk or network",
+    "integration: exercise the real DB/runtime stack",
+    "chaos: deselected by default; run with -m chaos nightly",
+]
+
+# ---------------------------------------------------------------------------
+# coverage
+#
+# source       — only referee-server is in scope for the coverage gate; qa/
+#                scripts are operational probes, not unit-tested code.
+# branch       — branch coverage is more honest than line for a control plane.
+# fail_under   — raised to 80 in the commit that adds direct unit tests for
+#                enforcer/db/webhook/ssh_client failure paths. Kept at 0 while
+#                the scaffolding is being put in place to avoid a red CI
+#                between scaffolding commits.
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+branch = true
+source = ["referee-server"]
+omit = [
+    "referee-server/tests/*",
+    "referee-server/conftest.py",
+    "referee-server/setup_cli.py",
+    "referee-server/__init__.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+precision = 1
+fail_under = 0
+exclude_also = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
