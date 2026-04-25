@@ -6,3 +6,4 @@ paramiko>=3
 httpx
 jinja2
 aiofiles
+PyYAML>=6

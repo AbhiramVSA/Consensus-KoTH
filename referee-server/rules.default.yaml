@@ -1,0 +1,118 @@
+# Default KoTH rule set.
+#
+# This file pins the production behavior that previously lived as a
+# hardcoded if-chain in enforcer.py and a dict literal in scheduler.py.
+# Every change here is reviewable on the diff; previously a tweak meant
+# editing Python in two places.
+#
+# Schema reference: see referee-server/rules.py module docstring.
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Violations.
+#
+# IDs match the ViolationHit ids in poller.py / scheduler.py so the
+# detection layer can look up each entry by name. The 8 immediate
+# detections (1-8) are produced by Poller._detect_violations from each
+# probe snapshot; 12-15 are produced by
+# RefereeRuntime._merge_baseline_violations by comparing the current
+# probe to the baseline captured at deploy time.
+# ---------------------------------------------------------------------------
+violations:
+  - id: 1
+    name: king_perm_changed
+    severity: critical
+    description: "/root/king.txt permissions deviate from 644"
+  - id: 2
+    name: king_owner_changed
+    severity: critical
+    description: "/root/king.txt owner is not root:root"
+  - id: 3
+    name: king_immutable
+    severity: critical
+    description: "/root/king.txt has the chattr +i (immutable) flag set"
+  - id: 4
+    name: king_deleted
+    severity: critical
+    description: "/root/king.txt is missing"
+  - id: 5
+    name: king_not_regular
+    severity: critical
+    description: "/root/king.txt is not a regular file (e.g. a symlink)"
+  - id: 6
+    name: root_dir_perm_changed
+    severity: critical
+    description: "/root permissions deviate from 700"
+  - id: 7
+    name: cron_king_persistence
+    severity: critical
+    description: "A cron entry references /root/king.txt"
+  - id: 8
+    name: watchdog_process
+    severity: critical
+    description: "An inotify / fswatch / incrond process is watching the king file"
+  - id: 12
+    name: service_ports_changed
+    severity: critical
+    description: "The set of listening TCP ports has changed since the baseline capture"
+  - id: 13
+    name: iptables_changed
+    severity: critical
+    description: "The iptables rule set has changed since the baseline capture"
+  - id: 14
+    name: shadow_changed
+    severity: critical
+    description: "/etc/shadow content hash has changed since the baseline capture"
+  - id: 15
+    name: authkeys_changed
+    severity: critical
+    description: "/root/.ssh/authorized_keys content hash has changed since baseline"
+
+# ---------------------------------------------------------------------------
+# Escalation policy.
+#
+# offense_count is the cumulative number of violations the team has
+# accumulated. Each step's threshold is inclusive: offense_count >=
+# step's on_offense_count selects that step. The action of the highest
+# matching step wins, so a 4th, 5th, 6th offense all stay at full_ban.
+# ---------------------------------------------------------------------------
+escalation:
+  - on_offense_count: 1
+    action: warning
+  - on_offense_count: 2
+    action: series_ban
+  - on_offense_count: 3
+    action: full_ban
+
+# ---------------------------------------------------------------------------
+# Exemptions.
+#
+# Each entry suppresses one or more named violations within a
+# (series, variant, team) scope. Any field left null matches everything;
+# the two production exemptions are scoped to specific (series, variant)
+# pairs because the corresponding privesc paths are intentional.
+# ---------------------------------------------------------------------------
+exemptions:
+  - series: 1
+    variant: B
+    waive:
+      - authkeys_changed
+    reason: >-
+      H1B (unauthenticated Redis) drops an attacker SSH key into
+      /root/.ssh/authorized_keys as part of the documented privesc path.
+      The authkeys_changed signal is therefore expected and must not
+      escalate the team.
+    owner: organizer
+    expires: null
+
+  - series: 7
+    variant: B
+    waive:
+      - shadow_changed
+    reason: >-
+      H7B (Grafana traversal -> world-writable /etc/shadow) intentionally
+      exposes /etc/shadow as the privesc artifact, so the shadow_changed
+      signal is expected and must not escalate the team.
+    owner: organizer
+    expires: null
