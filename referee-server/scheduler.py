@@ -69,12 +69,29 @@ class RefereeRuntime:
         Used by the rules-reload admin endpoint. Holding ``self._lock``
         is the caller's responsibility; the production caller (the
         admin route) does so via the same RLock that wraps every
-        lifecycle transition.
+        lifecycle transition. Logs a WARN if the new rule set has
+        drifted apart from the detector registry — operators can also
+        check explicitly via /api/admin/rules/validate.
         """
         self.ruleset = ruleset
         self.enforcer.set_ruleset(ruleset)
+        self._log_ruleset_consistency()
+
+    def _log_ruleset_consistency(self) -> None:
+        """Log a WARN per registry/rule-set mismatch."""
+        from detectors import validate_against_ruleset
+
+        for issue in validate_against_ruleset(self.ruleset):
+            logger.warning("ruleset/detector mismatch: %s", issue)
 
     def start_scheduler(self) -> None:
+        # Cross-check the active rule set against the detector
+        # registry once at startup so a YAML edit that forgot to add
+        # a detector (or registered a detector but forgot the YAML
+        # entry) is visible to the operator immediately, not at the
+        # first poll cycle.
+        self._log_ruleset_consistency()
+
         self.scheduler.start()
         if not self.scheduler.get_job("poll"):
             self.scheduler.add_job(
@@ -1215,6 +1232,14 @@ class RefereeRuntime:
     ) -> None:
         from poller import ViolationHit
 
+        # Detection is delegated to the baseline-detector registry in
+        # ``detectors.py``; this loop is now responsible only for: (a)
+        # fetching the per-snapshot baseline from the DB, (b) computing
+        # the per-(series, variant) waiver set against the active rule
+        # set, and (c) appending non-exempt hits to the caller-provided
+        # ``violations`` accumulator.
+        from detectors import detect_all_baseline
+
         for snap in snapshots:
             baseline = self.db.get_baseline(
                 machine_host=snap.node_host,
@@ -1224,13 +1249,7 @@ class RefereeRuntime:
             if baseline is None:
                 continue
 
-            shadow_hash = self.poller.extract_sha256_or_missing(snap.sections.get("SHADOW", ""))
-            authkeys_hash = self.poller.extract_sha256_or_missing(snap.sections.get("AUTHKEYS", ""))
-            iptables_sig = self.poller.stable_signature(snap.sections.get("IPTABLES", ""))
-            ports_sig = self.poller.stable_ports_signature(snap.sections.get("PORTS", ""))
-
             key = (snap.node_host, snap.variant)
-            hits: list[ViolationHit] = []
             # Resolve waivers for this (series, variant) from the active
             # rule set. The team is unknown at this filter point — it
             # resolves later, after quorum picks the owner — so we pass
@@ -1250,50 +1269,7 @@ class RefereeRuntime:
                 is not None
             }
 
-            if baseline.get("ports_sig") and ports_sig and baseline["ports_sig"] != ports_sig:
-                hits.append(
-                    ViolationHit(
-                        12,
-                        "service_ports_changed",
-                        {"expected_sig": baseline["ports_sig"], "actual_sig": ports_sig},
-                    )
-                )
-            if baseline.get("iptables_sig") and iptables_sig and baseline["iptables_sig"] != iptables_sig:
-                hits.append(
-                    ViolationHit(
-                        13,
-                        "iptables_changed",
-                        {"expected_sig": baseline["iptables_sig"], "actual_sig": iptables_sig},
-                    )
-                )
-            if (
-                baseline.get("shadow_hash") is not None
-                and baseline["shadow_hash"] != shadow_hash
-            ):
-                hits.append(
-                    ViolationHit(
-                        14,
-                        "shadow_changed",
-                        {
-                            "shadow_expected": baseline.get("shadow_hash"),
-                            "shadow_actual": shadow_hash,
-                        },
-                    )
-                )
-            if (
-                baseline.get("authkeys_hash") is not None
-                and baseline["authkeys_hash"] != authkeys_hash
-            ):
-                hits.append(
-                    ViolationHit(
-                        15,
-                        "authkeys_changed",
-                        {
-                            "authkeys_expected": baseline.get("authkeys_hash"),
-                            "authkeys_actual": authkeys_hash,
-                        },
-                    )
-                )
+            hits = detect_all_baseline(snap, baseline)
             if hits:
                 bucket = violations.setdefault(key, [])
                 for hit in hits:

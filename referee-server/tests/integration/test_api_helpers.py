@@ -686,3 +686,39 @@ exemptions: []
 
         response = self.client.post("/api/admin/rules/reload")
         self.assertEqual(response.status_code, 401)
+
+    def test_get_rules_validate_returns_ok_for_default(self) -> None:
+        response = self.client.get("/api/admin/rules/validate")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["issues"], [])
+
+    def test_get_rules_validate_flags_orphan_rule(self) -> None:
+        # Hot-swap to a rule set whose YAML has an extra rule that no
+        # detector implements; the validate endpoint should flag it.
+        from rules import RuleSet
+
+        self.app_module.runtime.set_ruleset(
+            RuleSet.from_yaml(
+                """
+version: 1
+violations:
+  - {id: 1, name: king_perm_changed, severity: critical}
+  - {id: 99, name: ghost_violation, severity: critical}
+escalation: []
+"""
+            )
+        )
+
+        response = self.client.get("/api/admin/rules/validate")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        joined = " ".join(payload["issues"])
+        self.assertIn("ghost_violation", joined)
+
+    def test_get_rules_validate_requires_admin_auth(self) -> None:
+        self.app_module.app.dependency_overrides.clear()
+        response = self.client.get("/api/admin/rules/validate")
+        self.assertEqual(response.status_code, 401)

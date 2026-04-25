@@ -227,43 +227,19 @@ fi;
             return None
 
     def _detect_violations(self, snap: VariantSnapshot) -> list[ViolationHit]:
-        out: list[ViolationHit] = []
-        king_stat = snap.sections.get("KING_STAT", "")
-        king = snap.sections.get("KING", "")
-        root_dir = snap.sections.get("ROOT_DIR", "")
-        immutable = snap.sections.get("IMMUTABLE", "")
-        cron = snap.sections.get("CRON", "")
-        procs = snap.sections.get("PROCS", "")
+        """Run every registered snapshot detector against ``snap``.
 
-        if king_stat and "STAT_FAIL" not in king_stat:
-            fields = king_stat.splitlines()[0].split()
-            if len(fields) >= 4:
-                perm = fields[1]
-                owner = fields[2]
-                file_type = " ".join(fields[3:]).lower()
-                if perm != "644":
-                    out.append(ViolationHit(1, "king_perm_changed", {"perm": perm}))
-                if owner != "root:root":
-                    out.append(ViolationHit(2, "king_owner_changed", {"owner": owner}))
-                if "regular file" not in file_type:
-                    out.append(ViolationHit(5, "king_not_regular", {"file_type": file_type}))
+        The detection logic itself lives in ``detectors.py``; this
+        method is now just a thin shim so existing call sites
+        (``run_cycle`` and the integration tests that reach in
+        directly) keep working. The import is local to break the
+        otherwise-circular dependency between ``poller`` and
+        ``detectors`` — ``detectors.py`` imports ``ViolationHit`` and
+        ``VariantSnapshot`` from this module.
+        """
+        from detectors import detect_all_snapshot
 
-        if "FILE_MISSING" in king:
-            out.append(ViolationHit(4, "king_deleted", {"king": king}))
-
-        if root_dir and root_dir.splitlines()[0].strip() != "700":
-            out.append(ViolationHit(6, "root_dir_perm_changed", {"root_dir": root_dir.strip()}))
-
-        if immutable and " i " in f" {immutable} ":
-            out.append(ViolationHit(3, "king_immutable", {"lsattr": immutable.strip()}))
-
-        if re.search(r"king", cron, re.IGNORECASE):
-            out.append(ViolationHit(7, "cron_king_persistence", {"cron": cron[:500]}))
-
-        if re.search(r"inotify|fswatch|incrond", procs, re.IGNORECASE):
-            out.append(ViolationHit(8, "watchdog_process", {"procs": procs[:500]}))
-
-        return out
+        return detect_all_snapshot(snap)
 
     @staticmethod
     def extract_sha256(raw: str) -> str | None:

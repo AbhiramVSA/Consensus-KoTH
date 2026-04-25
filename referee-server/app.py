@@ -1447,6 +1447,25 @@ def api_admin_rules() -> dict:
     return runtime.ruleset.to_dict()
 
 
+@app.get(
+    "/api/admin/rules/validate", dependencies=[Depends(require_admin_api_key)]
+)
+def api_admin_rules_validate() -> dict:
+    """Cross-check the active rule set against the detector registry.
+
+    Returns ``{"ok": True, "issues": []}`` when every rule has a
+    detector and every detector has a rule. Returns
+    ``{"ok": False, "issues": [...]}`` with one human-readable string
+    per mismatch when they have drifted apart — e.g. an operator
+    edited the YAML to add a new violation but forgot to register a
+    detector, or the inverse.
+    """
+    from detectors import validate_against_ruleset
+
+    issues = validate_against_ruleset(runtime.ruleset)
+    return {"ok": not issues, "issues": issues}
+
+
 @app.post("/api/admin/rules/reload", dependencies=[Depends(require_admin_api_key)])
 def api_admin_rules_reload() -> dict:
     path = default_ruleset_path()
