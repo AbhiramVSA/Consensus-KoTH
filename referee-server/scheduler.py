@@ -17,26 +17,52 @@ from typing import Any
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from _runtime_baselines import BaselineMixin
+from _runtime_compose import ComposeOpsMixin
+from _runtime_haproxy import HaproxyOpsMixin
 from config import SETTINGS
 from db import Database
 from enforcer import Enforcer
 from poller import Poller, VariantSnapshot
 from rules import RuleSet, load_default_ruleset
 from runtime_logging import log_structured
+from scheduler_errors import RuntimeGuardError as _SharedRuntimeGuardError
 from scorer import resolve_earliest_winners
 from ssh_client import SSHClientPool
 from webhook import fire_and_forget
 
 logger = logging.getLogger("koth.referee")
-PORT_BIND_RE = re.compile(r'^\s*-\s*"(?P<host>\d+):\d+(?:/\w+)?"')
-LISTEN_NAME_RE = re.compile(r"^listen\s+(\S+)")
 
 
-class RuntimeGuardError(RuntimeError):
-    pass
+# ``RuntimeGuardError`` lives in scheduler_errors.py so the mixin
+# modules can raise it without creating an import cycle. We re-export
+# it here so existing call sites (``from scheduler import
+# RuntimeGuardError``) keep working unchanged.
+RuntimeGuardError = _SharedRuntimeGuardError
 
 
-class RefereeRuntime:
+class RefereeRuntime(BaselineMixin, ComposeOpsMixin, HaproxyOpsMixin):
+    """Lifecycle orchestrator for the KoTH competition.
+
+    The class composes two mixins for what would otherwise be ~150
+    lines of unrelated docker-compose / HAProxy plumbing:
+
+    * ``ComposeOpsMixin`` provides ``_run_compose_on_node``,
+      ``_run_compose_parallel``, ``_series_compose_path``, and
+      ``_series_public_ports``.
+    * ``HaproxyOpsMixin`` provides ``_haproxy_listeners``,
+      ``_haproxy_server_name``, ``_haproxy_socket_command``,
+      ``_set_haproxy_series_state``, and
+      ``_sync_haproxy_active_series``.
+
+    Method resolution order is unchanged at the call sites — every
+    ``self._run_compose_parallel(...)`` and ``self._haproxy_listeners()``
+    in the lifecycle methods below resolves through normal MRO into
+    the mixin. The split is purely about which file you scroll through
+    to read each piece of logic; runtime behavior is byte-equivalent
+    to the pre-split version.
+    """
+
     # Legacy class-level dict literal preserved for backward compatibility:
     # any external code that imports ``RefereeRuntime._VIOLATION_EXEMPTIONS``
     # will still get the same data. New code should consult
@@ -217,127 +243,12 @@ class RefereeRuntime:
             "No teams are registered. Populate teams locally or configure a reachable BACKEND_URL before starting."
         )
 
-    def _run_compose_on_node(self, host: str, series: int, command: str) -> tuple[str, bool, str]:
-        series_dir = shlex.quote(f"{SETTINGS.remote_series_root}/h{series}")
-        full_command = f"cd {series_dir} && {command}"
-        try:
-            code, out, err = self.ssh_pool.exec(host, full_command)
-            return host, code == 0, (out or err)
-        except Exception as exc:
-            return host, False, str(exc)
-
-    def _run_compose_parallel(self, series: int, command: str) -> dict[str, tuple[bool, str]]:
-        results: dict[str, tuple[bool, str]] = {}
-        if not SETTINGS.node_hosts:
-            return results
-        with ThreadPoolExecutor(max_workers=len(SETTINGS.node_hosts)) as pool:
-            futures = {
-                pool.submit(self._run_compose_on_node, host, series, command): host
-                for host in SETTINGS.node_hosts
-            }
-            for future in as_completed(futures):
-                host, ok, output = future.result()
-                results[host] = (ok, output)
-        return results
-
-    def _series_compose_path(self, series: int) -> Path:
-        return Path(__file__).resolve().parents[1] / f"Series H{series}" / "docker-compose.yml"
-
-    def _series_public_ports(self, series: int) -> tuple[int, ...]:
-        cached = self._series_port_cache.get(series)
-        if cached is not None:
-            return cached
-        compose_path = self._series_compose_path(series)
-        ports: list[int] = []
-        if compose_path.is_file():
-            for raw_line in compose_path.read_text(encoding="utf-8").splitlines():
-                match = PORT_BIND_RE.match(raw_line)
-                if match:
-                    ports.append(int(match.group("host")))
-        resolved = tuple(sorted(set(ports)))
-        self._series_port_cache[series] = resolved
-        return resolved
-
-    def _haproxy_listeners(self) -> set[str]:
-        if self._haproxy_listener_cache is not None:
-            return self._haproxy_listener_cache
-        listeners: set[str] = set()
-        config_path = SETTINGS.haproxy_config_path
-        if config_path.is_file():
-            for raw_line in config_path.read_text(encoding="utf-8").splitlines():
-                match = LISTEN_NAME_RE.match(raw_line.strip())
-                if match:
-                    listeners.add(match.group(1))
-        self._haproxy_listener_cache = listeners
-        return listeners
-
-    @staticmethod
-    def _haproxy_server_name(host: str) -> str | None:
-        try:
-            return f"n{SETTINGS.node_hosts.index(host) + 1}"
-        except ValueError:
-            return None
-
-    def _haproxy_socket_command(self, command: str) -> str:
-        socket_path = SETTINGS.haproxy_admin_socket_path
-        if not socket_path.exists():
-            return ""
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(2.0)
-            client.connect(str(socket_path))
-            client.sendall((command.strip() + "\n").encode("utf-8"))
-            chunks: list[bytes] = []
-            while True:
-                try:
-                    chunk = client.recv(4096)
-                except TimeoutError:
-                    break
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            return b"".join(chunks).decode("utf-8", errors="replace")
-
-    def _set_haproxy_series_state(
-        self,
-        *,
-        series: int,
-        state: str,
-        hosts: tuple[str, ...] | None = None,
-    ) -> None:
-        socket_path = SETTINGS.haproxy_admin_socket_path
-        if not socket_path.exists():
-            return
-        listener_names = self._haproxy_listeners()
-        target_hosts = hosts or SETTINGS.node_hosts
-        for port in self._series_public_ports(series):
-            backend = f"p{port}"
-            if backend not in listener_names:
-                continue
-            for host in target_hosts:
-                server_name = self._haproxy_server_name(host)
-                if not server_name:
-                    continue
-                try:
-                    self._haproxy_socket_command(f"set server {backend}/{server_name} state {state}")
-                except Exception as exc:
-                    log_structured(
-                        logger,
-                        logging.WARNING,
-                        "haproxy_state_sync_failed",
-                        series=series,
-                        backend=backend,
-                        host=host,
-                        state=state,
-                        error=str(exc),
-                    )
-
-    def _sync_haproxy_active_series(self, active_series: int | None) -> None:
-        socket_path = SETTINGS.haproxy_admin_socket_path
-        if not socket_path.exists():
-            return
-        for series in range(1, SETTINGS.total_series + 1):
-            state = "ready" if active_series and series == active_series else "maint"
-            self._set_haproxy_series_state(series=series, state=state)
+    # ``_run_compose_on_node``, ``_run_compose_parallel``,
+    # ``_series_compose_path``, and ``_series_public_ports`` live in
+    # ``ComposeOpsMixin``. ``_haproxy_listeners``,
+    # ``_haproxy_server_name``, ``_haproxy_socket_command``,
+    # ``_set_haproxy_series_state``, and ``_sync_haproxy_active_series``
+    # live in ``HaproxyOpsMixin``. Both are inherited above.
 
     def _write_authoritative_owner_to_variant(
         self,
@@ -872,122 +783,14 @@ class RefereeRuntime:
                 )
         self.db.add_claim_observations(observations)
 
-    def _capture_baselines(self, series: int, snapshots: list[VariantSnapshot]) -> None:
-        for snap in snapshots:
-            shadow_hash = self.poller.extract_sha256_or_missing(snap.sections.get("SHADOW", ""))
-            authkeys_hash = self.poller.extract_sha256_or_missing(snap.sections.get("AUTHKEYS", ""))
-            iptables_sig = self.poller.stable_signature(snap.sections.get("IPTABLES", ""))
-            ports_sig = self.poller.stable_ports_signature(snap.sections.get("PORTS", ""))
-            self.db.upsert_baseline(
-                machine_host=snap.node_host,
-                variant=snap.variant,
-                series=series,
-                shadow_hash=shadow_hash,
-                authkeys_hash=authkeys_hash,
-                iptables_sig=iptables_sig,
-                ports_sig=ports_sig,
-            )
-
-    def _expected_snapshot_pairs(self) -> set[tuple[str, str]]:
-        return {(host, variant) for host in SETTINGS.node_hosts for variant in SETTINGS.variants}
-
-    def _snapshot_matrix_issues(self, snapshots: list[VariantSnapshot]) -> list[str]:
-        expected = self._expected_snapshot_pairs()
-        actual = {(snap.node_host, snap.variant) for snap in snapshots}
-        missing = sorted(expected - actual)
-        extras = sorted(actual - expected)
-        issues: list[str] = []
-        if missing:
-            rendered = ", ".join(f"{host}/{variant}" for host, variant in missing)
-            issues.append(f"missing snapshots: {rendered}")
-        if extras:
-            rendered = ", ".join(f"{host}/{variant}" for host, variant in extras)
-            issues.append(f"unexpected snapshots: {rendered}")
-        return issues
-
-    def _running_snapshot_counts_by_variant(self, snapshots: list[VariantSnapshot]) -> dict[str, int]:
-        counts = Counter[str]()
-        for snap in snapshots:
-            if snap.status == "running":
-                counts[snap.variant] += 1
-        return {variant: counts.get(variant, 0) for variant in SETTINGS.variants}
-
-    def _healthy_running_host_count(self, snapshots: list[VariantSnapshot]) -> int:
-        healthy_hosts = {snap.node_host for snap in snapshots if snap.status == "running"}
-        return len(healthy_hosts)
-
-    def _evaluate_series_health(
-        self,
-        *,
-        series: int,
-        snapshots: list[VariantSnapshot],
-        deploy_results: dict[str, tuple[bool, str]],
-    ) -> list[str]:
-        issues = self._snapshot_matrix_issues(snapshots)
-        healthy_hosts: set[str] = set()
-        degraded_hosts: set[str] = set()
-
-        for host, (ok, output) in sorted(deploy_results.items()):
-            if not ok:
-                issues.append(f"{host}: deploy command failed: {output[:200]}")
-
-        for snap in snapshots:
-            if snap.status == "degraded":
-                degraded_hosts.add(snap.node_host)
-                continue
-            if snap.status != "running":
-                issues.append(f"{snap.node_host}/{snap.variant}: status={snap.status}")
-                continue
-
-            king = (snap.king or "").strip().lower()
-            if king != "unclaimed":
-                issues.append(f"{snap.node_host}/{snap.variant}: king.txt={snap.king!r}")
-                continue
-
-            healthy_hosts.add(snap.node_host)
-
-        if len(healthy_hosts) < SETTINGS.min_healthy_nodes:
-            issues.append(
-                f"only {len(healthy_hosts)} healthy node(s); MIN_HEALTHY_NODES={SETTINGS.min_healthy_nodes}"
-            )
-
-        return issues
-
-    def _validate_current_series_or_raise(self, *, series: int) -> list[VariantSnapshot]:
-        snapshots, summary = self._validate_series_state(series=series)
-        if summary["issues"]:
-            raise RuntimeGuardError(
-                f"Current series H{series} failed resume validation: " + "; ".join(summary["issues"])
-            )
-        self.db.set_competition_state(
-            last_validated_series=series,
-            last_validated_at=datetime.now(UTC).isoformat(),
-        )
-        return snapshots
-
-    def _validate_series_state(self, *, series: int) -> tuple[list[VariantSnapshot], dict[str, Any]]:
-        snapshots, _ = self.poller.run_cycle(series=series)
-        self._mark_clock_drift_degraded(series=series, snapshots=snapshots)
-        self._apply_container_updates(series, snapshots)
-
-        issues = self._snapshot_matrix_issues(snapshots)
-        healthy_hosts = self._healthy_running_host_count(snapshots)
-        if healthy_hosts < SETTINGS.min_healthy_nodes:
-            issues.append(
-                f"only {healthy_hosts} healthy node(s); MIN_HEALTHY_NODES={SETTINGS.min_healthy_nodes}"
-            )
-        healthy_counts = self._running_snapshot_counts_by_variant(snapshots)
-        summary = {
-            "current_series": series,
-            "valid": not issues,
-            "complete_snapshot_matrix": not any(issue.startswith("missing snapshots:") or issue.startswith("unexpected snapshots:") for issue in issues),
-            "healthy_nodes": healthy_hosts,
-            "total_nodes": len(SETTINGS.node_hosts),
-            "min_healthy_nodes": SETTINGS.min_healthy_nodes,
-            "healthy_counts_by_variant": healthy_counts,
-            "issues": issues,
-        }
-        return snapshots, summary
+    # ``_capture_baselines``, ``_expected_snapshot_pairs``,
+    # ``_snapshot_matrix_issues``, ``_running_snapshot_counts_by_variant``,
+    # ``_healthy_running_host_count``, ``_evaluate_series_health``,
+    # ``_validate_current_series_or_raise``, ``_validate_series_state``,
+    # ``_mark_clock_drift_degraded``, ``_log_series_health``, and
+    # ``_merge_baseline_violations`` live in ``BaselineMixin`` (inherited
+    # above). The lifecycle methods that follow call them through ``self``
+    # so the call sites are unchanged.
 
     def validate_current_series(self) -> dict[str, Any]:
         with self._lock:
@@ -1156,125 +959,6 @@ class RefereeRuntime:
         raise RuntimeGuardError(
             f"Series H{series} failed deployment health gate: " + "; ".join(issues)
         )
-
-    def _mark_clock_drift_degraded(self, *, series: int, snapshots: list[VariantSnapshot]) -> set[str]:
-        epochs: dict[str, int] = {}
-        for snap in snapshots:
-            raw = snap.sections.get("NODE_EPOCH", "")
-            first = raw.splitlines()[0].strip() if raw else ""
-            if not first or first == "EPOCH_FAIL":
-                continue
-            try:
-                epochs[snap.node_host] = int(first)
-            except ValueError:
-                continue
-
-        if len(epochs) < 2:
-            return set()
-
-        baseline = int(statistics.median(epochs.values()))
-        degraded_hosts = {
-            host
-            for host, epoch in epochs.items()
-            if abs(epoch - baseline) > SETTINGS.max_clock_drift_seconds
-        }
-        for snap in snapshots:
-            if snap.node_host in degraded_hosts and snap.status == "running":
-                snap.status = "degraded"
-
-        for host in sorted(degraded_hosts):
-            self._log_event_and_webhook(
-                event_type="node_health",
-                severity="warning",
-                machine=host,
-                series=series,
-                detail="Node excluded from scoring due to clock drift",
-                evidence={
-                    "node_epoch": epochs.get(host),
-                    "median_epoch": baseline,
-                    "max_clock_drift_seconds": SETTINGS.max_clock_drift_seconds,
-                },
-            )
-        return degraded_hosts
-
-    def _log_series_health(self, *, series: int, snapshots: list[VariantSnapshot]) -> None:
-        for snap in snapshots:
-            if snap.status != "running":
-                self._log_event_and_webhook(
-                    event_type="node_health",
-                    severity="critical",
-                    machine=snap.node_host,
-                    variant=snap.variant,
-                    series=series,
-                    team_name=snap.king,
-                    detail="Container not healthy after deployment",
-                    evidence={"status": snap.status},
-                )
-                continue
-            if snap.king is not None and snap.king.lower() != "unclaimed":
-                self._log_event_and_webhook(
-                    event_type="node_health",
-                    severity="warning",
-                    machine=snap.node_host,
-                    variant=snap.variant,
-                    series=series,
-                    team_name=snap.king,
-                    detail="Container king.txt not reset to unclaimed after deploy",
-                    evidence={"king": snap.king},
-                )
-
-    def _merge_baseline_violations(
-        self,
-        *,
-        series: int,
-        snapshots: list[VariantSnapshot],
-        violations: dict[tuple[str, str], list[Any]],
-    ) -> None:
-        from poller import ViolationHit
-
-        # Detection is delegated to the baseline-detector registry in
-        # ``detectors.py``; this loop is now responsible only for: (a)
-        # fetching the per-snapshot baseline from the DB, (b) computing
-        # the per-(series, variant) waiver set against the active rule
-        # set, and (c) appending non-exempt hits to the caller-provided
-        # ``violations`` accumulator.
-        from detectors import detect_all_baseline
-
-        for snap in snapshots:
-            baseline = self.db.get_baseline(
-                machine_host=snap.node_host,
-                variant=snap.variant,
-                series=series,
-            )
-            if baseline is None:
-                continue
-
-            key = (snap.node_host, snap.variant)
-            # Resolve waivers for this (series, variant) from the active
-            # rule set. The team is unknown at this filter point — it
-            # resolves later, after quorum picks the owner — so we pass
-            # an empty string and rely on the YAML's null team scope
-            # matching anything. Production exemptions are
-            # team-agnostic; per-team exemptions would have to move
-            # this filter further downstream.
-            exempted = {
-                rule_name
-                for rule_name in self.ruleset.violations
-                if self.ruleset.find_exemption(
-                    violation_name=rule_name,
-                    series=series,
-                    variant=snap.variant,
-                    team="",
-                )
-                is not None
-            }
-
-            hits = detect_all_baseline(snap, baseline)
-            if hits:
-                bucket = violations.setdefault(key, [])
-                for hit in hits:
-                    if hit.offense_name not in exempted:
-                        bucket.append(hit)
 
     def _team_for_violation(
         self,

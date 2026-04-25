@@ -52,19 +52,23 @@ markers = [
 # source       — only referee-server is in scope for the coverage gate; qa/
 #                scripts are operational probes, not unit-tested code.
 # branch       — branch coverage is more honest than line for a control plane.
-# fail_under   — Current total coverage is ~85% after marking the SSH /
-#                /proc / HAProxy-socket helpers in app.py with
-#                ``# pragma: no cover`` and adding direct unit tests for
-#                every remaining pure helper plus the state-control admin
-#                endpoints. Per-module: enforcer / webhook / models /
-#                runtime_logging / scorer at 100%; config at 98%; db at
-#                98%; ssh_client at 95%; app at 93%; poller at 78%;
-#                scheduler at 68%.
+# fail_under   — Current total coverage is ~89% after the scheduler
+#                god-class split into _runtime_compose.py /
+#                _runtime_haproxy.py / _runtime_baselines.py mixins,
+#                each with direct unit tests. Per-module: enforcer /
+#                webhook / models / runtime_logging / scorer /
+#                detectors / scheduler_errors at 100%;
+#                _runtime_baselines at 98%; rules / db / config at 96%+;
+#                ssh_client at 95%; app at 93%; _runtime_compose at
+#                82%; poller at 78%; scheduler at 74%; _runtime_haproxy
+#                at 62% (the remaining gap is the UNIX-socket call
+#                paths that need a real HAProxy admin socket).
 #
-#                fail_under = 80 honors the docs/TESTING_AUDIT.md §5
-#                target with ~5% of headroom against branch-counting
-#                flakes. scheduler.py is the remaining drag; the next
-#                bump waits on its split (docs/AUDIT.md §8 row #2).
+#                fail_under = 85 with ~4% headroom against branch-
+#                counting flakes. The remaining drag is the
+#                scheduler-lifecycle deploy/recover branches that need
+#                per-method integration scenarios beyond what the
+#                current chaos suite covers.
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
 branch = true
@@ -80,7 +84,7 @@ omit = [
 show_missing = true
 skip_covered = false
 precision = 1
-fail_under = 80
+fail_under = 85
 exclude_also = [
     "pragma: no cover",
     "raise NotImplementedError",
