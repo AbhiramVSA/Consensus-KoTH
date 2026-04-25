@@ -21,6 +21,7 @@ from config import SETTINGS
 from db import Database
 from enforcer import Enforcer
 from poller import Poller, VariantSnapshot
+from rules import RuleSet, load_default_ruleset
 from runtime_logging import log_structured
 from scorer import resolve_earliest_winners
 from ssh_client import SSHClientPool
@@ -36,20 +37,42 @@ class RuntimeGuardError(RuntimeError):
 
 
 class RefereeRuntime:
+    # Legacy class-level dict literal preserved for backward compatibility:
+    # any external code that imports ``RefereeRuntime._VIOLATION_EXEMPTIONS``
+    # will still get the same data. New code should consult
+    # ``self.ruleset.find_exemption`` instead. This attribute is no longer
+    # read by anything inside this module.
     _VIOLATION_EXEMPTIONS: dict[tuple[int, str], set[str]] = {
         (1, "B"): {"authkeys_changed"},
         (7, "B"): {"shadow_changed"},
     }
 
-    def __init__(self, db: Database, ssh_pool: SSHClientPool):
+    def __init__(
+        self,
+        db: Database,
+        ssh_pool: SSHClientPool,
+        ruleset: RuleSet | None = None,
+    ):
         self.db = db
         self.ssh_pool = ssh_pool
         self.poller = Poller(ssh_pool)
-        self.enforcer = Enforcer(db)
+        self.ruleset = ruleset if ruleset is not None else load_default_ruleset()
+        self.enforcer = Enforcer(db, ruleset=self.ruleset)
         self.scheduler = BackgroundScheduler(timezone="UTC")
         self._lock = RLock()
         self._series_port_cache: dict[int, tuple[int, ...]] = {}
         self._haproxy_listener_cache: set[str] | None = None
+
+    def set_ruleset(self, ruleset: RuleSet) -> None:
+        """Hot-swap the rule set in both the runtime and the enforcer.
+
+        Used by the rules-reload admin endpoint. Holding ``self._lock``
+        is the caller's responsibility; the production caller (the
+        admin route) does so via the same RLock that wraps every
+        lifecycle transition.
+        """
+        self.ruleset = ruleset
+        self.enforcer.set_ruleset(ruleset)
 
     def start_scheduler(self) -> None:
         self.scheduler.start()
@@ -1208,7 +1231,24 @@ class RefereeRuntime:
 
             key = (snap.node_host, snap.variant)
             hits: list[ViolationHit] = []
-            exempted = self._VIOLATION_EXEMPTIONS.get((series, snap.variant), set())
+            # Resolve waivers for this (series, variant) from the active
+            # rule set. The team is unknown at this filter point — it
+            # resolves later, after quorum picks the owner — so we pass
+            # an empty string and rely on the YAML's null team scope
+            # matching anything. Production exemptions are
+            # team-agnostic; per-team exemptions would have to move
+            # this filter further downstream.
+            exempted = {
+                rule_name
+                for rule_name in self.ruleset.violations
+                if self.ruleset.find_exemption(
+                    violation_name=rule_name,
+                    series=series,
+                    variant=snap.variant,
+                    team="",
+                )
+                is not None
+            }
 
             if baseline.get("ports_sig") and ports_sig and baseline["ports_sig"] != ports_sig:
                 hits.append(

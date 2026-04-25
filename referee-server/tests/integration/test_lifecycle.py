@@ -990,3 +990,202 @@ class LifecycleGuardTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeGuardError):
             runtime.recover_current_series()
+
+
+# ---------------------------------------------------------------------------
+# Rule-engine integration on the runtime (exemption lookup at the merge
+# point). Pins that ``_merge_baseline_violations`` consults
+# ``self.ruleset.find_exemption`` instead of the legacy
+# ``_VIOLATION_EXEMPTIONS`` class-level dict literal.
+# ---------------------------------------------------------------------------
+class RuleEngineExemptionIntegrationTests(unittest.TestCase):
+    def make_runtime(
+        self, ruleset: object | None = None
+    ) -> tuple[RefereeRuntime, Database]:
+        fd, raw_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        db_path = Path(raw_path)
+        db = Database(db_path)
+        db.initialize()
+        self.addCleanup(lambda: db_path.exists() and db_path.unlink())
+        self.addCleanup(db.close)
+        return RefereeRuntime(db, DummySSH(), ruleset=ruleset), db
+
+    def _baseline_and_changed(self, *, hash_field: str, baseline_hash: str, current_hash: str):
+        from poller import VariantSnapshot
+
+        baseline = {
+            "ports_sig": None,
+            "iptables_sig": None,
+            "shadow_hash": None,
+            "authkeys_hash": None,
+        }
+        baseline[hash_field] = baseline_hash
+
+        # Map the YAML section name to the hash field on the snapshot.
+        section_map = {
+            "shadow_hash": "SHADOW",
+            "authkeys_hash": "AUTHKEYS",
+        }
+        section_name = section_map[hash_field]
+        section_value = f"{current_hash}  /tmp/probe"
+
+        snap = VariantSnapshot(
+            node_host="192.168.0.102",
+            variant="B",
+            king="unclaimed",
+            king_mtime_epoch=1,
+            status="running",
+            sections={section_name: section_value, "AUTHKEYS": "", "SHADOW": ""},
+            checked_at=datetime.now(UTC),
+        )
+        # Restore the field we actually want changed; the dict literal
+        # above zeroed both for simplicity.
+        snap.sections[section_name] = section_value
+        return baseline, snap
+
+    def test_h1b_authkeys_exemption_from_default_ruleset_drops_hit(self) -> None:
+        runtime, db = self.make_runtime()
+        # Capture a baseline with a known authkeys hash.
+        runtime._capture_baselines(
+            1,
+            [
+                snapshot(
+                    node_host="192.168.0.102",
+                    variant="B",
+                    king="unclaimed",
+                    extra_sections={"AUTHKEYS": "", "SHADOW": "", "IPTABLES": "ok", "PORTS": "ok"},
+                )
+            ],
+        )
+
+        violations: dict[tuple[str, str], list[object]] = {}
+        runtime._merge_baseline_violations(
+            series=1,
+            snapshots=[
+                snapshot(
+                    node_host="192.168.0.102",
+                    variant="B",
+                    king="Team Alpha",
+                    king_mtime_epoch=2,
+                    extra_sections={
+                        "AUTHKEYS": f"{'a' * 64}  /root/.ssh/authorized_keys",
+                        "SHADOW": "",
+                        "IPTABLES": "ok",
+                        "PORTS": "ok",
+                    },
+                )
+            ],
+            violations=violations,
+        )
+
+        # H1B's authkeys_changed exemption is in the default ruleset.
+        # The merged violations bucket is empty (or absent) for this
+        # snapshot.
+        assert violations.get(("192.168.0.102", "B"), []) == []
+
+    def test_custom_ruleset_without_h1b_exemption_records_authkeys_violation(self) -> None:
+        # Build a ruleset that retains the violations vocabulary but
+        # has NO exemptions. The legacy H1B authkeys path now records
+        # a hit instead of being silently waived.
+        from rules import RuleSet
+
+        ruleset_yaml = """
+version: 1
+violations:
+  - {id: 15, name: authkeys_changed, severity: critical}
+escalation:
+  - {on_offense_count: 1, action: warning}
+exemptions: []
+"""
+        runtime, db = self.make_runtime(ruleset=RuleSet.from_yaml(ruleset_yaml))
+
+        runtime._capture_baselines(
+            1,
+            [
+                snapshot(
+                    node_host="192.168.0.102",
+                    variant="B",
+                    king="unclaimed",
+                    extra_sections={"AUTHKEYS": "", "SHADOW": "", "IPTABLES": "ok", "PORTS": "ok"},
+                )
+            ],
+        )
+
+        violations: dict[tuple[str, str], list[object]] = {}
+        runtime._merge_baseline_violations(
+            series=1,
+            snapshots=[
+                snapshot(
+                    node_host="192.168.0.102",
+                    variant="B",
+                    king="Team Alpha",
+                    king_mtime_epoch=2,
+                    extra_sections={
+                        "AUTHKEYS": f"{'a' * 64}  /root/.ssh/authorized_keys",
+                        "SHADOW": "",
+                        "IPTABLES": "ok",
+                        "PORTS": "ok",
+                    },
+                )
+            ],
+            violations=violations,
+        )
+
+        hits = violations[("192.168.0.102", "B")]
+        assert any(hit.offense_name == "authkeys_changed" for hit in hits)
+
+    def test_set_ruleset_hot_swap_is_picked_up_on_next_merge(self) -> None:
+        from rules import RuleSet
+
+        runtime, db = self.make_runtime()
+        # Hot-swap to an empty exemption set; the next merge should
+        # record a hit even on H1B authkeys, which the default ruleset
+        # would have waived.
+        runtime.set_ruleset(
+            RuleSet.from_yaml(
+                """
+version: 1
+violations:
+  - {id: 15, name: authkeys_changed, severity: critical}
+escalation:
+  - {on_offense_count: 1, action: warning}
+exemptions: []
+"""
+            )
+        )
+
+        runtime._capture_baselines(
+            1,
+            [
+                snapshot(
+                    node_host="192.168.0.102",
+                    variant="B",
+                    king="unclaimed",
+                    extra_sections={"AUTHKEYS": "", "SHADOW": "", "IPTABLES": "ok", "PORTS": "ok"},
+                )
+            ],
+        )
+
+        violations: dict[tuple[str, str], list[object]] = {}
+        runtime._merge_baseline_violations(
+            series=1,
+            snapshots=[
+                snapshot(
+                    node_host="192.168.0.102",
+                    variant="B",
+                    king="Team Alpha",
+                    king_mtime_epoch=2,
+                    extra_sections={
+                        "AUTHKEYS": f"{'a' * 64}  /root/.ssh/authorized_keys",
+                        "SHADOW": "",
+                        "IPTABLES": "ok",
+                        "PORTS": "ok",
+                    },
+                )
+            ],
+            violations=violations,
+        )
+
+        hits = violations[("192.168.0.102", "B")]
+        assert any(hit.offense_name == "authkeys_changed" for hit in hits)

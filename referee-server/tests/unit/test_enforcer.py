@@ -169,3 +169,65 @@ def test_record_violation_maps_warning_action_to_warning_severity(
     events = db.list_events(limit=5)
     violation_event = next(event for event in events if event["type"] == "violation")
     assert violation_event["severity"] == "warning"
+
+
+# ---------------------------------------------------------------------------
+# Rule-engine integration.
+#
+# These tests pin that the Enforcer is actually consulting the
+# RuleSet's escalation policy rather than carrying a hardcoded
+# if-chain. Each test injects a custom RuleSet whose escalation
+# differs from the default and asserts the action surfaces through
+# escalate_team unchanged.
+# ---------------------------------------------------------------------------
+def test_enforcer_uses_default_ruleset_when_none_passed(tmp_db: Database) -> None:
+    # No ruleset arg -> load_default_ruleset() result.
+    from rules import load_default_ruleset
+
+    enforcer = Enforcer(tmp_db)
+    assert enforcer.ruleset.action_for_offense(1) == "warning"
+    assert enforcer.ruleset.action_for_offense(2) == "series_ban"
+    assert enforcer.ruleset.action_for_offense(3) == "full_ban"
+    # Same object identity is not guaranteed; same content is.
+    expected = load_default_ruleset()
+    assert enforcer.ruleset.violation_names() == expected.violation_names()
+
+
+def test_enforcer_respects_custom_escalation_policy(tmp_db: Database) -> None:
+    # Custom rule set: skip "warning", go straight to series_ban on
+    # the 1st offense, full_ban on the 2nd. Pinning that escalate_team
+    # surfaces these actions confirms the if-chain has been fully
+    # replaced.
+    from rules import RuleSet
+
+    yaml_text = """
+version: 1
+escalation:
+  - on_offense_count: 1
+    action: series_ban
+  - on_offense_count: 2
+    action: full_ban
+"""
+    enforcer = Enforcer(tmp_db, ruleset=RuleSet.from_yaml(yaml_text))
+    tmp_db.upsert_team_names(["Team Alpha"])
+
+    first = enforcer.escalate_team("Team Alpha")
+    second = enforcer.escalate_team("Team Alpha")
+
+    assert first.action == "series_ban"
+    assert second.action == "full_ban"
+
+
+def test_enforcer_set_ruleset_swaps_active_policy(tmp_db: Database) -> None:
+    from rules import RuleSet
+
+    enforcer = Enforcer(tmp_db)
+    assert enforcer.ruleset.action_for_offense(1) == "warning"
+
+    # Hot-swap to a no-op ruleset.
+    enforcer.set_ruleset(RuleSet.from_yaml("version: 1\nescalation: []\n"))
+    tmp_db.upsert_team_names(["Team Alpha"])
+    decision = enforcer.escalate_team("Team Alpha")
+
+    # No escalation step -> action_for_offense returns "none".
+    assert decision.action == "none"
