@@ -53,6 +53,7 @@ from models import (
     ValidationResponse,
 )
 from poller import Poller
+from rules import RuleSet, RuleSetError, default_ruleset_path
 from runtime_logging import configure_logging
 from scheduler import RefereeRuntime, RuntimeGuardError
 from ssh_client import SSHClientPool
@@ -1424,3 +1425,58 @@ def api_recover_redeploy() -> RecoveryResponse:
     except RuntimeGuardError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return RecoveryResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# Rule-engine introspection and reload.
+#
+# GET  /api/admin/rules          returns the active rule set as JSON
+# POST /api/admin/rules/reload   re-reads rules.default.yaml from disk and
+#                                hot-swaps the active rule set on both the
+#                                runtime and the embedded enforcer
+#
+# The reload path is the operator's pressure release valve when an event
+# turns up an exemption that should have been declared, or when an
+# escalation policy needs a temporary tweak. Without this endpoint, the
+# only way to change rules at event time is to edit YAML, restart the
+# referee, and re-validate every node — losing live polling state in
+# the process.
+# ---------------------------------------------------------------------------
+@app.get("/api/admin/rules", dependencies=[Depends(require_admin_api_key)])
+def api_admin_rules() -> dict:
+    return runtime.ruleset.to_dict()
+
+
+@app.post("/api/admin/rules/reload", dependencies=[Depends(require_admin_api_key)])
+def api_admin_rules_reload() -> dict:
+    path = default_ruleset_path()
+    try:
+        new_rules = RuleSet.from_path(path)
+    except (RuleSetError, FileNotFoundError, OSError) as exc:
+        # 422 (Unprocessable Entity) is the right code: the request was
+        # well-formed but the YAML on disk is rejected by the schema.
+        raise HTTPException(
+            status_code=422,
+            detail=f"refusing to reload — current rule set unchanged: {exc}",
+        ) from exc
+
+    with runtime._lock:  # noqa: SLF001 - serialize against scheduler / poll
+        runtime.set_ruleset(new_rules)
+
+    db.add_event(
+        event_type="admin_action",
+        severity="info",
+        detail=(
+            f"rule set reloaded: {len(new_rules.violations)} violations, "
+            f"{len(new_rules.escalation)} escalation steps, "
+            f"{len(new_rules.exemptions)} exemptions"
+        ),
+    )
+    logger.info(
+        "rule set reloaded from %s (violations=%d escalation=%d exemptions=%d)",
+        path,
+        len(new_rules.violations),
+        len(new_rules.escalation),
+        len(new_rules.exemptions),
+    )
+    return {"ok": True, "rules": new_rules.to_dict()}

@@ -575,3 +575,114 @@ class PublicHelperTests(unittest.TestCase):
 
         # poll_interval_seconds // 6 = 5; clamped within [3, 10] -> 5.
         self.assertEqual(self.app_module._public_refresh_interval_seconds(), 5)
+
+
+# ---------------------------------------------------------------------------
+# Rule-engine admin endpoints
+# ---------------------------------------------------------------------------
+class RuleEngineAdminEndpointTests(unittest.TestCase):
+    def setUp(self) -> None:
+        _install_api_test_fixture(self)
+        _override_admin_auth(self)
+
+    def test_get_rules_returns_active_set(self) -> None:
+        response = self.client.get("/api/admin/rules")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["version"], 1)
+        self.assertGreaterEqual(len(payload["violations"]), 8)
+        names = {entry["name"] for entry in payload["violations"]}
+        # Sanity: a few well-known violations from the default YAML.
+        self.assertIn("king_perm_changed", names)
+        self.assertIn("authkeys_changed", names)
+        self.assertIn("shadow_changed", names)
+        # Exemptions for H1B and H7B come through in the dict shape.
+        scopes = {(e["series"], e["variant"]) for e in payload["exemptions"]}
+        self.assertIn((1, "B"), scopes)
+        self.assertIn((7, "B"), scopes)
+
+    def test_get_rules_requires_admin_auth(self) -> None:
+        # Drop the dependency override added in setUp so the real auth
+        # check fires.
+        self.app_module.app.dependency_overrides.clear()
+
+        response = self.client.get("/api/admin/rules")
+        self.assertEqual(response.status_code, 401)
+
+    def test_post_rules_reload_replaces_active_set(self) -> None:
+        from rules import default_ruleset_path
+
+        original_path = default_ruleset_path()
+        original_yaml = original_path.read_text(encoding="utf-8")
+
+        # Write a custom ruleset to disk in place of the default. Restore
+        # afterwards so the rest of the suite sees the canonical file.
+        custom = """
+version: 1
+violations:
+  - {id: 99, name: custom_marker_only, severity: warning}
+escalation:
+  - {on_offense_count: 1, action: full_ban}
+exemptions: []
+"""
+        original_path.write_text(custom, encoding="utf-8")
+        self.addCleanup(lambda: original_path.write_text(original_yaml, encoding="utf-8"))
+
+        response = self.client.post("/api/admin/rules/reload")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(payload["rules"]["violations"]), 1)
+        self.assertEqual(payload["rules"]["violations"][0]["name"], "custom_marker_only")
+
+        # Active rule set on the runtime is the reloaded one.
+        self.assertEqual(self.app_module.runtime.ruleset.action_for_offense(1), "full_ban")
+        # Enforcer gets the same swap.
+        self.assertEqual(
+            self.app_module.runtime.enforcer.ruleset.action_for_offense(1),
+            "full_ban",
+        )
+
+    def test_post_rules_reload_logs_admin_event(self) -> None:
+        # The reload writes an admin_action event to the events table.
+        before = len(self.app_module.db.list_events(limit=20))
+        response = self.client.post("/api/admin/rules/reload")
+        self.assertEqual(response.status_code, 200)
+        events = self.app_module.db.list_events(limit=20)
+        self.assertGreater(len(events), before)
+        latest = events[0]
+        self.assertEqual(latest["type"], "admin_action")
+        self.assertIn("rule set reloaded", latest["detail"])
+
+    def test_post_rules_reload_rejects_malformed_yaml_with_422(self) -> None:
+        from rules import default_ruleset_path
+
+        original_path = default_ruleset_path()
+        original_yaml = original_path.read_text(encoding="utf-8")
+
+        # Write a structurally-broken YAML that the loader will reject.
+        original_path.write_text(
+            "version: 1\nviolations:\n  - id: 1\n    name: x\n    severity: extreme\n",
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: original_path.write_text(original_yaml, encoding="utf-8"))
+
+        response = self.client.post("/api/admin/rules/reload")
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("refusing to reload", response.json()["detail"])
+
+        # The active rule set on the runtime is UNCHANGED; reload is
+        # all-or-nothing. Smoke-check by asking for the action; the
+        # default 1->warning is still in effect.
+        self.assertEqual(
+            self.app_module.runtime.ruleset.action_for_offense(1),
+            "warning",
+        )
+
+    def test_post_rules_reload_requires_admin_auth(self) -> None:
+        # Drop the dependency override added in setUp so the real auth
+        # check fires.
+        self.app_module.app.dependency_overrides.clear()
+
+        response = self.client.post("/api/admin/rules/reload")
+        self.assertEqual(response.status_code, 401)
