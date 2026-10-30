@@ -1,18 +1,26 @@
-# Consensus KoTH
+<p align="center">
+  <img src="assets/consensus-koth-mark.svg" alt="Three challenge nodes linked to a referee" width="104">
+</p>
 
-Consensus KoTH is a distributed King of the Hill cyber range with a centralized referee, quorum-based ownership validation, replicated challenge nodes, and operator tooling for lifecycle control, scoring, health validation, and recovery.
+<h1 align="center">Consensus KoTH</h1>
 
-It is built for events where a single write on a single box is not good enough to declare ownership. Players still compromise services and write a team name into `/root/king.txt`, but points are awarded only when the referee has enough healthy evidence across replicas to trust the claim.
-- Production runtime is the distributed referee-managed model under `referee-server/` plus node-local `h1..h8` directories on `node1/node2/node3`.
-- `Series HN/docker-compose.yml` files are the per-series deploy artifacts copied into node-local `hN/` directories and validated by the referee before a series becomes active.
-- Root-level `docker-compose.yml` and `rotate.sh` are local/dev-only artifacts and must not be treated as the production control plane.
-- Operators should use `/api/runtime`, `/api/recover/validate`, and `/api/recover/redeploy` for runtime inspection and recovery.
-- The dashboard now includes admin team controls: create teams, manually ban a team, and manually unban a team. New team names must satisfy the same claim rules as `king.txt` ownership, so reserved or malformed names such as `unclaimed` are rejected.
-- The public participant board on `:9000` now shows the current access window, organizer notices, hard-bound rules, a live leaderboard, and a cumulative score graph for the leading teams.
-- The admin dashboard on `:8000` now renders the full team table instead of truncating to the first 25 teams.
-- Manual test execution guide: [docs/manual-tester-checklist.md](docs/manual-tester-checklist.md)
-- Referee rule validation guide: [docs/referee-rule-validation-checklist.md](docs/referee-rule-validation-checklist.md)
-- Separate attacker-style Codex prompt: [docs/codex-h1a-player-prompt.md](docs/codex-h1a-player-prompt.md)
+<p align="center">A distributed King of the Hill cyber range with a quorum-based referee and operator recovery tools.</p>
+
+<div align="center">
+
+[Overview](#overview) · [Capabilities](#core-capabilities) · [Safety](#safety) · [Ownership](#how-ownership-works) · [Architecture](#architecture) · [Quick start](#quick-start) · [Configuration](#configuration) · [Operations](#deployment-and-operations) · [QA](#qa-and-validation-tooling)
+
+</div>
+
+## Overview
+
+Consensus KoTH runs intentionally vulnerable challenge services across replicated nodes. Players can compromise a service and write their team name to `/root/king.txt`; the central referee decides whether the claim has enough healthy evidence to award points.
+
+The production model uses `referee-server/` with node-local `h1` through `h8` directories on three challenge nodes. Each `Series HN/docker-compose.yml` file is copied to the matching node directory and validated before the referee activates that series. The root [`docker-compose.yml`](docker-compose.yml) and [`rotate.sh`](rotate.sh) support local development; they are not the production control plane.
+
+Operators can inspect runtime state through `/api/runtime` and validate or redeploy through `/api/recover/validate` and `/api/recover/redeploy`. The dashboards provide separate admin and participant views. Team controls support create, ban, and unban actions; the participant board shows notices, rules, the leaderboard, and cumulative scores.
+
+For deployment details, start with the [full deployment runbook](docs/full-deployment-runbook.md), then use the [deployment validation checklist](docs/deployment-validation-checklist.md).
 
 ## Why This Exists
 
@@ -41,15 +49,15 @@ Consensus KoTH solves that by making the referee authoritative. The nodes expose
 
 ## Safety
 
-This repository contains intentionally vulnerable services and tooling that performs real exploit probes against them.
-
-Use it only for:
+This repository contains intentionally vulnerable services and tooling that sends real exploit traffic. Use it only for:
 
 - owned lab environments
 - authorized training exercises
 - private or sanctioned competitions
 
 Do not deploy this against infrastructure you do not control.
+
+Some validation scripts change challenge files, firewall rules, team records, or running services. In particular, [`validate_rule_matrix_live.py`](qa/deployment/validate_rule_matrix_live.py) can leave partial changes if it stops unexpectedly. Read its safety notes and run it only against a dedicated staging lab that you can rebuild.
 
 ## How Ownership Works
 
@@ -416,7 +424,7 @@ For event execution and validation:
 [`qa/README.md`](qa/README.md) covers service-level probes:
 
 - `qa/load_suite.py` for protocol-aware load checks
-- `qa/vuln_suite.py` for non-destructive exploit validation
+- `qa/vuln_suite.py` for exploit probes against authorized challenge labs; it sends real exploit traffic
 
 ### Deployment QA
 
@@ -477,10 +485,6 @@ That keeps the repository publishable without mixing it with event-local state.
 
 ## Current Status
 
-Consensus KoTH is already usable as a private event platform, but it is opinionated:
+The design assumes a three-node challenge topology, a central referee host, and quorum-based ownership. It does not score each node independently. A specific installation needs its own deployment validation; the runbook and checklist describe those steps.
 
-- it assumes a three-node challenge topology
-- it assumes a central referee host
-- it assumes quorum-based ownership instead of independent per-node scoring
-
-If that matches the event design, this repository gives you the core range, control plane, and validation tooling in one place.
+The repository does not include a root `LICENSE` file.
