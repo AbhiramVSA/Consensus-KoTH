@@ -44,7 +44,7 @@ Consensus KoTH solves that by making the referee authoritative. The nodes expose
 - Admin dashboard for operators and separate participant board for players
 - Team management with ban/unban controls and claim-name validation
 - Recovery APIs for validation and controlled redeploys
-- Protocol-aware QA harness for load checks and safe exploit proofing
+- QA probes for load, vulnerability exposure, and deployment behavior
 - Detailed deployment runbooks and validation checklists
 
 ## Safety
@@ -228,6 +228,8 @@ These are useful for development and content testing, but they are not the autho
 
 ### Run the Referee Locally
 
+The project requires Python 3.12 or newer. Before startup, set `ADMIN_API_KEY`, `NODE_HOSTS`, and the SSH settings for a challenge lab that you control. The referee refuses to start without an admin key by default.
+
 ```bash
 cd referee-server
 python -m venv .venv
@@ -238,20 +240,29 @@ Activate the virtual environment:
 - macOS/Linux: `source .venv/bin/activate`
 - PowerShell: `.venv\Scripts\Activate.ps1`
 
-Install dependencies and start the referee:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt pytest
-uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-Open:
+Start the admin referee in one terminal:
 
-- admin dashboard: `http://127.0.0.1:8000`
-- participant board: `http://127.0.0.1:9000`
-- participant leaderboard: `http://127.0.0.1:9000/leaderboard`
+```bash
+uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+Start the participant board in a second terminal from `referee-server/`:
+
+```bash
+uvicorn app:participant_app --host 127.0.0.1 --port 9000
+```
+
+Open the local admin dashboard at `http://127.0.0.1:8000`, the participant board at `http://127.0.0.1:9000`, and its leaderboard at `http://127.0.0.1:9000/leaderboard`.
 
 ### Run Tests
+
+Run the test command from the repository root:
 
 ```bash
 python -m pytest referee-server/tests -q
@@ -424,7 +435,7 @@ For event execution and validation:
 [`qa/README.md`](qa/README.md) covers service-level probes:
 
 - `qa/load_suite.py` for protocol-aware load checks
-- `qa/vuln_suite.py` for exploit probes against authorized challenge labs; it sends real exploit traffic
+- `qa/vuln_suite.py` for authorized vulnerability probes that send real exploit traffic
 
 ### Deployment QA
 
