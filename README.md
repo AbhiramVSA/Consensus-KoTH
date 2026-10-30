@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/consensus-koth-mark.svg" alt="Three challenge nodes linked to a referee" width="104">
+  <img src="assets/consensus-koth-logo.png" alt="Central referee shield linked to challenger nodes in a quorum ring" width="200">
 </p>
 
 <h1 align="center">Consensus KoTH</h1>
