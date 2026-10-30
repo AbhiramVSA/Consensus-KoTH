@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Consensus KoTH mark</title>
+  <desc id="desc">Three challenge nodes connect through a central referee node.</desc>
+  <path d="M64 36v21M35 81l20-12m38 12L73 69" fill="none" stroke="#93a4bd" stroke-linecap="round" stroke-width="7"/>
+  <circle cx="64" cy="25" r="17" fill="#f0b74b"/>
+  <circle cx="27" cy="91" r="18" fill="#e26f5a"/>
+  <circle cx="101" cy="91" r="18" fill="#45b9a5"/>
+  <rect x="48" y="55" width="32" height="32" rx="10" fill="#243a61" stroke="#fff" stroke-width="4"/>
+  <path d="M59 71h10M64 66v10" stroke="#fff" stroke-linecap="round" stroke-width="4"/>
+  <path d="M20 111h94" stroke="#243a61" stroke-linecap="round" stroke-width="6"/>
+</svg>
